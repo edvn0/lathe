@@ -382,6 +382,21 @@ namespace cvars {
             .hint = "INTENSITY",
             .default_value = 200.0F,
     }};
+    CVar<bool> gi_far{{
+            .name = "gi_far",
+            .group = "Diagnostics",
+            .help = "The probe GI's second, coarser cascade (four times the spacing, updated every other frame); off "
+                    "limits the volume to the near cascade",
+            .default_value = true,
+    }};
+    CVar<std::string> gi_synth_lights{{
+            .name = "gi_synth_lights",
+            .group = "Diagnostics",
+            .help = "Point lights a model's emissive meshes (and authored lights) become when it loads: auto (off while the "
+                    "probe GI is on, since the volume lights those meshes itself), on, off",
+            .hint = "auto|on|off",
+            .default_value = "auto",
+    }};
     CVar<bool> rt_poc{{
             .name = "rt_poc",
             .group = "Diagnostics",

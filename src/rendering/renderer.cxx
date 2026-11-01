@@ -2077,6 +2077,7 @@ auto Renderer::destroy() noexcept -> void {
     environment_.destroy();
 
     pipeline_graph_.destroy();
+    probe_volume_far_.destroy();
     probe_volume_.destroy();
     scene_rt_.destroy();
     gpu_resource_table_.destroy();
@@ -3321,6 +3322,7 @@ auto Renderer::update_submesh_geometry(MeshHandle mesh, std::uint32_t submesh_in
     }
 
     slot->submeshes[submesh_index].lods = lods;
+    ++slot->submeshes[submesh_index].revision;
 
     mark_shadow_casters_dirty();
     return {};
@@ -4618,6 +4620,7 @@ auto Renderer::update_ray_tracing_scene(std::uint32_t frame_index) -> void {
 
     scene_rt_.begin_frame(frame_index);
     probe_volume_.begin_emitters(frame_index);
+    probe_volume_far_.begin_emitters(frame_index);
 
     auto const add_batches = [this](std::vector<BatchEntry const *> const &batches) {
         for (auto const *batch: batches) {
@@ -4667,11 +4670,13 @@ auto Renderer::update_ray_tracing_scene(std::uint32_t frame_index) -> void {
                             auto const scale = std::max({glm::length(glm::vec3{(*transform)[0]}),
                                                          glm::length(glm::vec3{(*transform)[1]}),
                                                          glm::length(glm::vec3{(*transform)[2]})});
-                            probe_volume_.add_emitter(ProbeVolume::Emitter{
+                            auto const emitter = ProbeVolume::Emitter{
                                     .centre = glm::vec3{*transform * glm::vec4{centre, 1.0F}},
                                     .radius = std::max(half_extent * scale, 0.01F),
                                     .material_index = material_storage_.gpu_index(batch->material),
-                            });
+                            };
+                            probe_volume_.add_emitter(emitter);
+                            probe_volume_far_.add_emitter(emitter);
                         }
                     }
                 }
@@ -4688,6 +4693,7 @@ auto Renderer::update_ray_tracing_scene(std::uint32_t frame_index) -> void {
                             .vertex_count = geometry->vertices.vertex_count,
                             .index_count = geometry->indices.index_count,
                             .index_type = geometry->indices.index_type,
+                            .revision = submesh.revision,
                     },
                     material_storage_.gpu_index(batch->material), batch->transforms, instance_flags);
         }
@@ -4862,6 +4868,8 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
         update_ray_tracing_scene(frame_index);
         probe_volume_.begin_frame(camera_position, light_.direction, light_.colour * light_.intensity,
                                   environment_.ubo_block());
+        probe_volume_far_.begin_frame(camera_position, light_.direction, light_.colour * light_.intensity,
+                                      environment_.ubo_block());
     }
     auto emitted = emit_batches(frame, build_state);
     if (!secondary) {
@@ -5665,6 +5673,7 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
             .overdraw_width = overdraw_active ? extent_.width : 0U,
             .overdraw_size = overdraw_active ? extent_.width * extent_.height : 0U,
             .gi = probe_volume_.gpu_block(),
+            .gi_far = probe_volume_far_.gpu_block(),
     };
 
     if (!ubos_[frame_index].write(0, std::span{&ubo, 1})) {

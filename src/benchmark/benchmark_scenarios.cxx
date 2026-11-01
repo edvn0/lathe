@@ -61,12 +61,14 @@ namespace {
         auto operator=(MaterialSet &&) -> MaterialSet & = delete;
 
         auto make(glm::vec4 const &colour, AlphaMode alpha_mode = AlphaMode::opaque, float roughness = 0.6F,
-                  std::uint32_t max_shadow_cascade = shadow_cascade_count - 1) -> MaterialHandle {
+                  std::uint32_t max_shadow_cascade = shadow_cascade_count - 1,
+                  glm::vec3 const &emissive = glm::vec3{0.0F}) -> MaterialHandle {
             auto &images = renderer_->image_storage();
             auto &samplers = renderer_->sampler_storage();
 
             auto material = renderer_->create_material(MaterialCreateInfo{
                     .base_colour_factor = colour,
+                    .emissive_factor = emissive,
                     .metallic_factor = 0.0F,
                     .roughness_factor = roughness,
                     .base_colour_texture = images.white(),
@@ -427,6 +429,43 @@ namespace {
         return orbit_path(glm::vec3{0.0F}, light_field_size * 0.35F, 3.0F, 30.0F, 8);
     }
 
+    // The probe GI's cost and look: a field of boxes lit only by small emissive cubes (bulbs). Run it with --gi; the
+    // load is the number of bulbs. The camera orbits at street height so the volume follows it across the field.
+    auto populate_gi_emitters(BenchmarkScenarioContext const &context) -> void {
+        MaterialSet materials{context.renderer};
+        spawn_ground(context, materials, light_field_size + 20.0F);
+
+        auto const box_material = materials.make(glm::vec4{0.7F, 0.7F, 0.72F, 1.0F}, AlphaMode::opaque, 0.5F);
+        constexpr std::uint32_t boxes_per_side = 20;
+        constexpr auto box_spacing = light_field_size / static_cast<float>(boxes_per_side);
+        for (std::uint32_t i = 0; i < boxes_per_side * boxes_per_side; ++i) {
+            auto const x = (static_cast<float>(i % boxes_per_side) + 0.5F) * box_spacing - light_field_size * 0.5F;
+            auto const z = (static_cast<float>(i / boxes_per_side) + 0.5F) * box_spacing - light_field_size * 0.5F;
+            auto const height = 1.0F + static_cast<float>(i % 3);
+            spawn(context.scene, std::format("bench_box_{}", i), context.engine_models.cube,
+                  Components::Transform{.position = glm::vec3{x, height * 0.5F, z},
+                                        .scale = glm::vec3{2.0F, height, 2.0F}},
+                  box_material);
+        }
+
+        auto const bulb_material = materials.make(glm::vec4{1.0F}, AlphaMode::opaque, 0.5F,
+                                                  shadow_cascade_count - 1, glm::vec3{1.0F, 0.75F, 0.45F});
+        auto engine = make_random_engine(random_stream_base + 4);
+        std::uniform_real_distribution<float> unit{0.0F, 1.0F};
+        for (std::uint32_t i = 0; i < context.load; ++i) {
+            spawn(context.scene, std::format("bench_bulb_{}", i), context.engine_models.cube,
+                  Components::Transform{.position = glm::vec3{(unit(engine) - 0.5F) * light_field_size,
+                                                              0.5F + unit(engine) * 4.0F,
+                                                              (unit(engine) - 0.5F) * light_field_size},
+                                        .scale = glm::vec3{0.2F}},
+                  bulb_material);
+        }
+    }
+
+    [[nodiscard]] auto gi_emitters_path(std::uint32_t) -> std::vector<CameraKeyframe> {
+        return orbit_path(glm::vec3{0.0F}, light_field_size * 0.25F, 2.0F, 4.0F, 8);
+    }
+
     auto populate_overdraw(BenchmarkScenarioContext const &context) -> void {
         MaterialSet materials{context.renderer};
         spawn_ground(context, materials, 80.0F);
@@ -689,6 +728,13 @@ auto builtin_benchmark_scenarios(bool game_has_benchmark_path) -> std::vector<Be
                            "shading cost per light.",
             .populate = populate_lights,
             .camera_path = lights_path,
+    });
+    scenarios.push_back(BenchmarkScenario{
+            .info = {.name = "gi_emitters", .load_axis = "bulbs", .default_loads = {16, 128, 1024}},
+            .description = "A field of boxes lit only by small emissive cubes through the probe GI (run with --gi): "
+                           "probe trace, blend and TLAS cost, and the explicit emitter list, per bulb.",
+            .populate = populate_gi_emitters,
+            .camera_path = gi_emitters_path,
     });
     scenarios.push_back(BenchmarkScenario{
             .info = {.name = "overdraw", .load_axis = "layers", .default_loads = {4, 16, 64}},

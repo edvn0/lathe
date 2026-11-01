@@ -81,6 +81,8 @@ namespace cvars {
     extern CVar<std::uint32_t> gi_rays_per_probe;
     extern CVar<float> gi_intensity;
     extern CVar<float> gi_emitter_intensity;
+    extern CVar<std::string> gi_synth_lights;
+    extern CVar<bool> gi_far;
     extern CVar<std::string> rt_poc_view;
 
     // Game and scene.

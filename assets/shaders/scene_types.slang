@@ -312,6 +312,8 @@ public struct UBO {
     public uint overdraw_size;
 
     public GpuGiBlock gi;
+    // The coarser cascade around the same camera (flags 0 when the frame has none).
+    public GpuGiBlock gi_far;
 };
 
 public struct PC

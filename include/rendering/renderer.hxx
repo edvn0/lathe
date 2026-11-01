@@ -315,9 +315,10 @@ struct UBO {
     std::uint32_t overdraw_size = 0;
 
     ProbeVolume::GpuBlock gi{};
+    ProbeVolume::GpuBlock gi_far{};
 };
 
-static_assert(sizeof(UBO) == 1088, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
+static_assert(sizeof(UBO) == 1152, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
 static_assert(offsetof(UBO, environment) == 816);
 static_assert(offsetof(UBO, gi) == 1024);
 static_assert(std::is_trivially_copyable_v<UBO>);
@@ -808,6 +809,9 @@ struct Renderer final : public IMeshSink, public IModelSink {
     // The probe GI volume (docs/probe-gi.md): call create() once the scene acceleration structure is ready; it turns the ray
     // tracing scene on. Settings can change between frames.
     [[nodiscard]] auto probe_volume() noexcept -> ProbeVolume & { return probe_volume_; }
+    [[nodiscard]] auto probe_volume() const noexcept -> ProbeVolume const & { return probe_volume_; }
+    [[nodiscard]] auto probe_volume_far() noexcept -> ProbeVolume & { return probe_volume_far_; }
+    [[nodiscard]] auto probe_volume_far() const noexcept -> ProbeVolume const & { return probe_volume_far_; }
 
     [[nodiscard]] auto assets() noexcept -> AssetRegistry & { return assets_; }
     [[nodiscard]] auto assets() const noexcept -> AssetRegistry const & { return assets_; }
@@ -1720,6 +1724,8 @@ private:
     GpuResourceTable gpu_resource_table_{};
     SceneAccelerationStructure scene_rt_{};
     ProbeVolume probe_volume_{};
+    // The coarser cascade: four times the spacing, so the volume reaches four times as far for the same probe count.
+    ProbeVolume probe_volume_far_{};
     bool ray_tracing_scene_enabled_ = false;
 
     std::vector<Buffer> ubos_;

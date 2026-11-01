@@ -225,8 +225,11 @@ auto ProbeVolume::begin_frame(glm::vec3 camera, glm::vec3 sun_direction, glm::ve
                                           max_rays_per_probe);
     settings_.spacing = std::max(settings_.spacing, 0.05F);
 
+    // A volume that skips frames keeps its window too: the probes that scroll in are only reassigned by a classify pass.
+    auto const interval = std::max(settings_.update_interval, 1U);
+    updating_ = !state_cleared_ || frame_ % interval == 0;
     // The grid is centred on the camera and moves in whole probe steps.
-    for (auto axis = 0; axis < 3; ++axis) {
+    for (auto axis = 0; updating_ && axis < 3; ++axis) {
         auto const index = static_cast<std::size_t>(axis);
         auto const centre = static_cast<std::int32_t>(std::floor(camera[axis] / settings_.spacing));
         base_[index] = centre - static_cast<std::int32_t>(settings_.counts[index] / 2);
@@ -348,7 +351,7 @@ auto ProbeVolume::record_trace(VkCommandBuffer command_buffer, std::uint32_t fra
             .rotation = {rotation_.x, rotation_.y, rotation_.z, rotation_.w},
             .emitter_count = emitter_counts_[frame_index % frames_in_flight],
             .light_count = inputs.lights != 0 ? inputs.light_count : 0,
-            .flags = 0,
+            .flags = settings_.cascade,
             .emitter_intensity = settings_.emitter_intensity,
     };
     vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(push), &push);
@@ -401,7 +404,7 @@ auto ProbeVolume::record_blend(VkCommandBuffer command_buffer, std::uint32_t fra
                 .rotation = {rotation_.x, rotation_.y, rotation_.z, rotation_.w},
         };
         vkCmdPushConstants(command_buffer, layout, VK_SHADER_STAGE_ALL, 0, sizeof(push), &push);
-        vkCmdDispatch(command_buffer, groups_of(target.extent.width), groups_of(target.extent.height), 1);
+        vkCmdDispatch(command_buffer, probe_count(), 1, 1);
     }
 }
 

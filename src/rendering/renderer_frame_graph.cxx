@@ -602,68 +602,90 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
     auto gi_state = frame_graph::BufferId{};
     auto gi_irradiance = frame_graph::ImageId{};
     auto gi_distance = frame_graph::ImageId{};
+    auto gi_far_state = frame_graph::BufferId{};
+    auto gi_far_irradiance = frame_graph::ImageId{};
+    auto gi_far_distance = frame_graph::ImageId{};
     auto const gi_active = !secondary && probe_volume_.active() && scene_tlas.valid() &&
                            scene_rt_.instance_table_address() != 0;
-    if (gi_active) {
-        constexpr auto gi_sampled = frame_graph::ResourceState{
-                .layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                .stages = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                .access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+    // The coarser cascade only exists when the near one does and was created; it samples and traces like it.
+    auto const gi_far_active = gi_active && probe_volume_far_.active();
+    struct GiCascadeNames {
+        char const *state;
+        char const *rays;
+        char const *irradiance;
+        char const *distance;
+        char const *trace;
+        char const *trace_label;
+        char const *classify;
+        char const *classify_label;
+        char const *blend;
+        char const *blend_label;
+        char const *border;
+        char const *border_label;
+    };
+    constexpr auto gi_sampled = frame_graph::ResourceState{
+            .layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .stages = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            .access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+    };
+    auto const gi_profile = [](char const *name, char const *label) {
+        return frame_graph::PassProfile{
+                .name_id = name,
+                .label = label,
+                .color = static_cast<std::uint32_t>(tracy::Color::Gold),
         };
-        auto const gi_entry = probe_volume_.atlases_initialised() ? gi_sampled : frame_graph::ResourceState{};
+    };
+    auto const add_gi_cascade = [&](ProbeVolume &volume, GiCascadeNames const &names, frame_graph::BufferId &probes,
+                                    frame_graph::ImageId &irradiance, frame_graph::ImageId &distance) {
+        auto const entry = volume.atlases_initialised() ? gi_sampled : frame_graph::ResourceState{};
         // The probe state and the atlases are used by every frame in flight, so their first use waits for the last
         // frame's last use.
-        gi_state = frame_graph_.import_buffer({
+        probes = frame_graph_.import_buffer({
                 .entry = persistent_buffer_state,
                 .exit = persistent_buffer_state,
-                .debug_name = "gi_probe_state",
-                .buffer = physical_buffer(probe_volume_.state_buffer()),
+                .debug_name = names.state,
+                .buffer = physical_buffer(volume.state_buffer()),
         });
-        auto gi_rays = frame_graph_.import_buffer({
+        auto rays = frame_graph_.import_buffer({
                 .entry = persistent_buffer_state,
                 .exit = persistent_buffer_state,
-                .debug_name = "gi_ray_data",
-                .buffer = physical_buffer(probe_volume_.ray_buffer()),
+                .debug_name = names.rays,
+                .buffer = physical_buffer(volume.ray_buffer()),
         });
-        gi_irradiance = frame_graph_.import_image({
-                .entry = gi_entry,
+        irradiance = frame_graph_.import_image({
+                .entry = entry,
                 .exit = gi_sampled,
-                .debug_name = "gi_irradiance_atlas",
-                .image = physical_image(probe_volume_.irradiance_image()),
+                .debug_name = names.irradiance,
+                .image = physical_image(volume.irradiance_image()),
         });
-        gi_distance = frame_graph_.import_image({
-                .entry = gi_entry,
+        distance = frame_graph_.import_image({
+                .entry = entry,
                 .exit = gi_sampled,
-                .debug_name = "gi_distance_atlas",
-                .image = physical_image(probe_volume_.distance_image()),
+                .debug_name = names.distance,
+                .image = physical_image(volume.distance_image()),
         });
-        probe_volume_.mark_atlases_initialised();
+        volume.mark_atlases_initialised();
+        // A cascade that skips this frame is only sampled by the forward pass.
+        if (!volume.updating()) {
+            return;
+        }
 
-        auto const gi_profile = [](char const *name, char const *label) {
-            return frame_graph::PassProfile{
-                    .name_id = name,
-                    .label = label,
-                    .color = static_cast<std::uint32_t>(tracy::Color::Gold),
-            };
-        };
-
-        frame_graph_.add_pass("gi_probe_trace", frame_graph::PassType::compute,
-                              gi_profile("gi_probe_trace", "Probe trace"),
+        frame_graph_.add_pass(names.trace, frame_graph::PassType::compute, gi_profile(names.trace, names.trace_label),
                               [&](frame_graph::PassBuilder &pass) {
                                   [[maybe_unused]] auto const tlas =
                                           pass.read(scene_tlas, frame_graph::Use::acceleration_structure_read,
                                                     compute_stage);
                                   // Last frame's atlases: a ray that hits a surface asks the volume what lights it.
                                   [[maybe_unused]] auto const irradiance_read =
-                                          pass.read(gi_irradiance, frame_graph::Use::sampled, compute_stage);
+                                          pass.read(irradiance, frame_graph::Use::sampled, compute_stage);
                                   [[maybe_unused]] auto const distance_read =
-                                          pass.read(gi_distance, frame_graph::Use::sampled, compute_stage);
-                                  gi_state = pass.write(gi_state, frame_graph::Use::shader_read_write, compute_stage);
-                                  gi_rays = pass.write(gi_rays, frame_graph::Use::shader_write, compute_stage);
+                                          pass.read(distance, frame_graph::Use::sampled, compute_stage);
+                                  probes = pass.write(probes, frame_graph::Use::shader_read_write, compute_stage);
+                                  rays = pass.write(rays, frame_graph::Use::shader_write, compute_stage);
                                   pass.side_effect();
 
                                   return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
-                                      probe_volume_.record_trace(
+                                      volume.record_trace(
                                               context.command_buffer, info.frame_index,
                                               {.instance_table = scene_rt_.instance_table_address(),
                                                .materials = material_storage_.device_address(),
@@ -675,50 +697,60 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                                   }};
                               });
 
-        frame_graph_.add_pass("gi_probe_classify", frame_graph::PassType::compute,
-                              gi_profile("gi_probe_classify", "Probe classify"),
-                              [&](frame_graph::PassBuilder &pass) {
-                                  [[maybe_unused]] auto const rays =
-                                          pass.read(gi_rays, frame_graph::Use::shader_read, compute_stage);
-                                  gi_state = pass.write(gi_state, frame_graph::Use::shader_read_write, compute_stage);
+        frame_graph_.add_pass(names.classify, frame_graph::PassType::compute,
+                              gi_profile(names.classify, names.classify_label), [&](frame_graph::PassBuilder &pass) {
+                                  [[maybe_unused]] auto const rays_read =
+                                          pass.read(rays, frame_graph::Use::shader_read, compute_stage);
+                                  probes = pass.write(probes, frame_graph::Use::shader_read_write, compute_stage);
                                   pass.side_effect();
 
                                   return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
-                                      probe_volume_.record_classify(context.command_buffer, info.frame_index);
+                                      volume.record_classify(context.command_buffer, info.frame_index);
                                   }};
                               });
 
-        frame_graph_.add_pass("gi_probe_blend", frame_graph::PassType::compute,
-                              gi_profile("gi_probe_blend", "Probe blend"),
+        frame_graph_.add_pass(names.blend, frame_graph::PassType::compute, gi_profile(names.blend, names.blend_label),
                               [&](frame_graph::PassBuilder &pass) {
-                                  [[maybe_unused]] auto const rays =
-                                          pass.read(gi_rays, frame_graph::Use::shader_read, compute_stage);
+                                  [[maybe_unused]] auto const rays_read =
+                                          pass.read(rays, frame_graph::Use::shader_read, compute_stage);
                                   [[maybe_unused]] auto const probe_state =
-                                          pass.read(gi_state, frame_graph::Use::shader_read, compute_stage);
-                                  gi_irradiance = pass.write(gi_irradiance, frame_graph::Use::storage_read_write,
-                                                             compute_stage);
-                                  gi_distance = pass.write(gi_distance, frame_graph::Use::storage_read_write,
-                                                           compute_stage);
+                                          pass.read(probes, frame_graph::Use::shader_read, compute_stage);
+                                  irradiance = pass.write(irradiance, frame_graph::Use::storage_read_write,
+                                                          compute_stage);
+                                  distance = pass.write(distance, frame_graph::Use::storage_read_write, compute_stage);
                                   pass.side_effect();
 
                                   return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
-                                      probe_volume_.record_blend(context.command_buffer, info.frame_index);
+                                      volume.record_blend(context.command_buffer, info.frame_index);
                                   }};
                               });
 
-        frame_graph_.add_pass("gi_probe_border", frame_graph::PassType::compute,
-                              gi_profile("gi_probe_border", "Probe border"),
-                              [&](frame_graph::PassBuilder &pass) {
-                                  gi_irradiance = pass.write(gi_irradiance, frame_graph::Use::storage_read_write,
-                                                             compute_stage);
-                                  gi_distance = pass.write(gi_distance, frame_graph::Use::storage_read_write,
-                                                           compute_stage);
+        frame_graph_.add_pass(names.border, frame_graph::PassType::compute,
+                              gi_profile(names.border, names.border_label), [&](frame_graph::PassBuilder &pass) {
+                                  irradiance = pass.write(irradiance, frame_graph::Use::storage_read_write,
+                                                          compute_stage);
+                                  distance = pass.write(distance, frame_graph::Use::storage_read_write, compute_stage);
                                   pass.side_effect();
 
                                   return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
-                                      probe_volume_.record_border(context.command_buffer, info.frame_index);
+                                      volume.record_border(context.command_buffer, info.frame_index);
                                   }};
                               });
+    };
+    if (gi_active) {
+        add_gi_cascade(probe_volume_,
+                       GiCascadeNames{"gi_probe_state", "gi_ray_data", "gi_irradiance_atlas", "gi_distance_atlas",
+                                      "gi_probe_trace", "Probe trace", "gi_probe_classify", "Probe classify",
+                                      "gi_probe_blend", "Probe blend", "gi_probe_border", "Probe border"},
+                       gi_state, gi_irradiance, gi_distance);
+    }
+    if (gi_far_active) {
+        add_gi_cascade(probe_volume_far_,
+                       GiCascadeNames{"gi_far_probe_state", "gi_far_ray_data", "gi_far_irradiance_atlas",
+                                      "gi_far_distance_atlas", "gi_far_probe_trace", "Far probe trace",
+                                      "gi_far_probe_classify", "Far probe classify", "gi_far_probe_blend",
+                                      "Far probe blend", "gi_far_probe_border", "Far probe border"},
+                       gi_far_state, gi_far_irradiance, gi_far_distance);
     }
 
     frame_graph_.add_pass("gpu_culling", frame_graph::PassType::compute,
@@ -1330,6 +1362,14 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                     pass.read(gi_distance, frame_graph::Use::sampled, fragment_stage);
             [[maybe_unused]] auto const gi_state_read =
                     pass.read(gi_state, frame_graph::Use::shader_read, fragment_stage);
+            if (gi_far_active) {
+                [[maybe_unused]] auto const gi_far_irradiance_read =
+                        pass.read(gi_far_irradiance, frame_graph::Use::sampled, fragment_stage);
+                [[maybe_unused]] auto const gi_far_distance_read =
+                        pass.read(gi_far_distance, frame_graph::Use::sampled, fragment_stage);
+                [[maybe_unused]] auto const gi_far_state_read =
+                        pass.read(gi_far_state, frame_graph::Use::shader_read, fragment_stage);
+            }
         }
         if (local_shadows_active) {
             [[maybe_unused]] auto const local_shadows =

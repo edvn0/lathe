@@ -1,4 +1,5 @@
 #include "app/application.hxx"
+#include "runtime/engine_cvars.hxx"
 #include "core/paths.hxx"
 
 #include <csignal>
@@ -2891,6 +2892,11 @@ auto Application::update_model_loads() -> void {
 // the model's entity, at their place in the model. Their range is in the model's units, so the entity's scale applies.
 auto Application::spawn_model_lights(Scene *scene, entt::entity model_entity, ModelHandle model) -> void {
     auto &registry = scene->get_registry();
+    // With the probe GI on, the emissive meshes light the scene themselves: the stand-in lights would count them twice.
+    auto const synth = std::string_view{cvars::gi_synth_lights.get()};
+    if (synth == "off" || (synth != "on" && cvars::gi.get())) {
+        return;
+    }
     auto const lights = renderer->model_lights(model);
     auto const *parent_transform = registry.try_get<Components::Transform>(model_entity);
     if (lights.empty() || parent_transform == nullptr) {

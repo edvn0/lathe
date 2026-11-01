@@ -47,6 +47,10 @@ public:
         float emitter_intensity = 200.0F;
         // 0 off, 1 irradiance only (the diffuse term on grey), 2 probe state (green active, red off).
         std::uint32_t debug_view = 0;
+        // 0 the near cascade, 1 the coarser one: the trace samples its own cascade for the bounce.
+        std::uint32_t cascade = 0;
+        // The passes run every this many frames; in between the volume is still sampled, and does not scroll.
+        std::uint32_t update_interval = 1;
     };
 
     // Mirrors GpuGiBlock in scene_types.slang: the end of the UBO.
@@ -110,6 +114,8 @@ public:
                      EnvironmentUboBlock const &environment) -> void;
     // True when the frame has a volume to trace and sample.
     [[nodiscard]] auto active() const noexcept -> bool { return active_; }
+    // True on the frames the passes run (see Settings::update_interval).
+    [[nodiscard]] auto updating() const noexcept -> bool { return active_ && updating_; }
     [[nodiscard]] auto gpu_block() const noexcept -> GpuBlock;
 
     // The resources the frame graph imports.
@@ -166,6 +172,7 @@ private:
 
     // This frame.
     bool active_ = false;
+    bool updating_ = false;
     std::uint32_t frame_ = 0;
     std::array<std::int32_t, 3> base_{};
     glm::quat rotation_{1.0F, 0.0F, 0.0F, 0.0F};

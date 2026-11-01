@@ -21,6 +21,9 @@ struct Submesh {
 
     glm::vec3 bounds_min{-0.5F};
     glm::vec3 bounds_max{0.5F};
+
+    // Counts update_submesh_geometry calls, so a cache of derived data (the ray tracing BLAS) notices a rewrite in place.
+    std::uint32_t revision = 0;
 };
 
 struct MeshSlotData {

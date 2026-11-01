@@ -255,6 +255,7 @@ auto SceneAccelerationStructure::make_blas(Geometry const &geometry) -> Blas * {
             .index_offset = geometry.index_offset,
             .vertex_count = geometry.vertex_count,
             .index_count = geometry.index_count,
+            .revision = geometry.revision,
             .scratch_size = scratch,
             .last_used = frame_counter_,
     };
@@ -284,7 +285,8 @@ auto SceneAccelerationStructure::add(Geometry const &geometry, std::uint32_t mat
     if (auto const found = blases_.find(geometry.key); found != blases_.end()) {
         blas = &found->second;
         if (blas->vertex_offset != geometry.vertex_offset || blas->index_offset != geometry.index_offset ||
-            blas->vertex_count != geometry.vertex_count || blas->index_count != geometry.index_count) {
+            blas->vertex_count != geometry.vertex_count || blas->index_count != geometry.index_count ||
+            blas->revision != geometry.revision) {
             // The mesh was re-uploaded somewhere else: the old structure describes data that is gone.
             // A pending build of it this frame would reference a structure about to be retired, so drop it first.
             std::erase_if(pending_, [blas](PendingBuild const &pending) { return pending.blas == blas; });

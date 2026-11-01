@@ -338,6 +338,22 @@ auto Runtime::on_startup() -> void {
                 warn("--gi needs VK_KHR_ray_query, which this device does not support");
             } else if (auto const created = renderer->probe_volume().create(*renderer); !created) {
                 warn("Could not set up the probe volume: {}", describe(created.error()));
+            } else {
+                // The coarser cascade: same probe counts at four times the spacing, updated every other frame.
+                auto &far = renderer->probe_volume_far();
+                auto &near_settings = renderer->probe_volume().settings();
+                far.settings() = near_settings;
+                far.settings().spacing = near_settings.spacing * 4.0F;
+                far.settings().normal_bias = near_settings.normal_bias * 4.0F;
+                far.settings().view_bias = near_settings.view_bias * 4.0F;
+                far.settings().cascade = 1;
+                far.settings().update_interval = 2;
+                far.settings().debug_view = 0;
+                if (!cvars::gi_far.get()) {
+                    // Left uncreated: the cascade is simply not there.
+                } else if (auto const far_created = far.create(*renderer); !far_created) {
+                    warn("Could not set up the far probe cascade: {}", describe(far_created.error()));
+                }
             }
         }
 

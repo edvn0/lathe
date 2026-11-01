@@ -63,87 +63,82 @@ bool locate(uint2 id, uint tile, out uint slot, out int2 texel)
     return true;
 }
 
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void irradiance_cs(uint3 id : SV_DispatchThreadID)
-{
-    uint slot;
-    int2 texel;
-    if (!locate(id.xy, gi_irradiance_tile, slot, texel))
-    {
-        return;
-    }
-    int2 interior = texel - 1;
-    if (any(interior < 0) || any(interior >= int(gi_irradiance_interior)))
-    {
-        return;
-    }
+static const uint gi_max_rays = 256;
 
-    float3 direction = gi_oct_decode((float2(interior) + 0.5) / float(gi_irradiance_interior) * 2.0 - 1.0);
-    float3 sum = float3(0.0);
-    float weight_sum = 0.0;
-    for (uint i = 0; i < pc.rays_per_probe; ++i)
+// One workgroup per probe: its rays (rotated direction, radiance, distance) are read from memory once into groupshared
+// storage, then every texel of the tile weighs them. (A thread per texel reading them itself did the same work 64 to 256 times.)
+groupshared float4 shared_direction[gi_max_rays];
+groupshared float4 shared_radiance[gi_max_rays];
+
+void stage_rays(uint slot, uint thread_index, uint thread_count)
+{
+    for (uint i = thread_index; i < pc.rays_per_probe; i += thread_count)
     {
-        float3 ray_direction = gi_rotate(pc.rotation, gi_fibonacci_direction(i, pc.rays_per_probe));
-        float weight = max(0.0, dot(direction, ray_direction));
-        if (weight <= 0.0)
-        {
-            continue;
-        }
         float3 radiance;
         float distance;
         unpack(pc.ray_data[slot * pc.rays_per_probe + i], radiance, distance);
-        sum += min(radiance, float3(gi_max_radiance)) * weight;
-        weight_sum += weight;
+        shared_direction[i] = float4(gi_rotate(pc.rotation, gi_fibonacci_direction(i, pc.rays_per_probe)), 0.0);
+        shared_radiance[i] = float4(radiance, distance);
     }
-    float3 fresh = weight_sum > 1e-4 ? sum / weight_sum : float3(0.0);
+    GroupMemoryBarrierWithGroupSync();
+}
 
-    float4 old = storage_2d[pc.atlas][id.xy];
-    // A new probe takes the fresh value outright: the atlas may hold anything (NaN included) for it.
-    float h = probe_hysteresis(slot);
-    storage_2d[pc.atlas][id.xy] = float4(h <= 0.0 ? fresh : lerp(fresh, old.rgb, h), 1.0);
+// The atlas texel of the first interior texel of a probe's tile.
+uint2 tile_origin(uint slot, uint tile)
+{
+    uint per_row = pc.count_x * pc.count_y;
+    return uint2((slot % per_row) * tile, (slot / per_row) * tile);
 }
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
-void distance_cs(uint3 id : SV_DispatchThreadID)
+void irradiance_cs(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID, uint index : SV_GroupIndex)
 {
-    uint slot;
-    int2 texel;
-    if (!locate(id.xy, gi_distance_tile, slot, texel))
-    {
-        return;
-    }
-    int2 interior = texel - 1;
-    if (any(interior < 0) || any(interior >= int(gi_distance_interior)))
-    {
-        return;
-    }
+    uint slot = group.x;
+    stage_rays(slot, index, 64);
 
-    float3 direction = gi_oct_decode((float2(interior) + 0.5) / float(gi_distance_interior) * 2.0 - 1.0);
+    float3 direction = gi_oct_decode((float2(local.xy) + 0.5) / float(gi_irradiance_interior) * 2.0 - 1.0);
+    float3 sum = float3(0.0);
+    float weight_sum = 0.0;
+    for (uint i = 0; i < pc.rays_per_probe; ++i)
+    {
+        float weight = max(0.0, dot(direction, shared_direction[i].xyz));
+        sum += min(shared_radiance[i].rgb, float3(gi_max_radiance)) * weight;
+        weight_sum += weight;
+    }
+    float3 fresh = weight_sum > 1e-4 ? sum / weight_sum : float3(0.0);
+
+    uint2 texel = tile_origin(slot, gi_irradiance_tile) + local.xy + 1;
+    float4 old = storage_2d[pc.atlas][texel];
+    // A new probe takes the fresh value outright: the atlas may hold anything (NaN included) for it.
+    float h = probe_hysteresis(slot);
+    storage_2d[pc.atlas][texel] = float4(h <= 0.0 ? fresh : lerp(fresh, old.rgb, h), 1.0);
+}
+
+[shader("compute")]
+[numthreads(16, 16, 1)]
+void distance_cs(uint3 group : SV_GroupID, uint3 local : SV_GroupThreadID, uint index : SV_GroupIndex)
+{
+    uint slot = group.x;
+    stage_rays(slot, index, 256);
+
+    float3 direction = gi_oct_decode((float2(local.xy) + 0.5) / float(gi_distance_interior) * 2.0 - 1.0);
     float cap = 5.0 * pc.spacing;
     float2 sum = float2(0.0);
     float weight_sum = 0.0;
     for (uint i = 0; i < pc.rays_per_probe; ++i)
     {
-        float3 ray_direction = gi_rotate(pc.rotation, gi_fibonacci_direction(i, pc.rays_per_probe));
-        float weight = pow(max(0.0, dot(direction, ray_direction)), 64.0);
-        if (weight <= 1e-6)
-        {
-            continue;
-        }
-        float3 radiance;
-        float distance;
-        unpack(pc.ray_data[slot * pc.rays_per_probe + i], radiance, distance);
-        float d = min(abs(distance), cap);
+        float weight = pow(max(0.0, dot(direction, shared_direction[i].xyz)), 64.0);
+        float d = min(abs(shared_radiance[i].w), cap);
         sum += float2(d, d * d) * weight;
         weight_sum += weight;
     }
     float2 fresh = weight_sum > 1e-6 ? sum / weight_sum : float2(cap, cap * cap);
 
-    float4 old = storage_2d[pc.atlas][id.xy];
+    uint2 texel = tile_origin(slot, gi_distance_tile) + local.xy + 1;
+    float4 old = storage_2d[pc.atlas][texel];
     float h = probe_hysteresis(slot);
-    storage_2d[pc.atlas][id.xy] = float4(h <= 0.0 ? fresh : lerp(fresh, old.rg, h), 0.0, 1.0);
+    storage_2d[pc.atlas][texel] = float4(h <= 0.0 ? fresh : lerp(fresh, old.rg, h), 0.0, 1.0);
 }
 
 [shader("compute")]

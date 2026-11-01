@@ -94,10 +94,9 @@ public float3 gi_rotate(float4 q, float3 v)
 // Diffuse irradiance (as the SH term: the mean radiance over the cosine lobe, so albedo * result is the outgoing
 // radiance) from the probe volume at `position` for a surface facing `normal`. `coverage` is 0 outside the volume (and
 // where every neighbouring probe is off) and 1 well inside; the caller blends the result with its fallback by it.
-public float3 gi_sample_irradiance(Ptr<UBO> ubo, float3 position, float3 normal, float3 view_direction,
-                                   out float coverage)
+public float3 gi_sample_block(Ptr<UBO> ubo, GpuGiBlock gi, float3 position, float3 normal, float3 view_direction,
+                              out float coverage)
 {
-    GpuGiBlock gi = ubo.gi;
     coverage = 0.0;
 
     int3 base = int3(gi.base_x, gi.base_y, gi.base_z);
@@ -178,6 +177,30 @@ public float3 gi_sample_irradiance(Ptr<UBO> ubo, float3 position, float3 normal,
     }
     coverage = fade;
     return sum / weight_sum * gi.intensity;
+}
+
+// The scene's diffuse light at `position`: the near cascade where it reaches, the coarse one beyond (and under the near
+// one's outer layer, which fades out). `coverage` is how much of the result the volumes supply; the caller blends in its
+// fallback for the rest.
+public float3 gi_sample_irradiance(Ptr<UBO> ubo, float3 position, float3 normal, float3 view_direction,
+                                   out float coverage)
+{
+    float near_coverage = 0.0;
+    float3 near_light = float3(0.0);
+    if ((ubo.gi.flags & gi_flag_enabled) != 0)
+    {
+        near_light = gi_sample_block(ubo, ubo.gi, position, normal, view_direction, near_coverage);
+    }
+    coverage = near_coverage;
+    if (near_coverage >= 1.0 || (ubo.gi_far.flags & gi_flag_enabled) == 0)
+    {
+        return near_light;
+    }
+    float far_coverage;
+    float3 far_light = gi_sample_block(ubo, ubo.gi_far, position, normal, view_direction, far_coverage);
+    far_coverage *= 1.0 - near_coverage;
+    coverage = near_coverage + far_coverage;
+    return coverage > 1e-5 ? (near_light * near_coverage + far_light * far_coverage) / coverage : float3(0.0);
 }
 
 // What the probe nearest to `position` says about itself, for the debug views: green active, red off.

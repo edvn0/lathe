@@ -346,10 +346,12 @@ void main_cs(uint3 group_id : SV_GroupID, uint3 local_id : SV_GroupThreadID)
         }
 
         // Light that already bounced around: the probe volume as last frame left it.
-        if ((ubo.gi.flags & gi_flag_enabled) != 0)
+        // (A cascade bounces on its own light: the coarse one has to stand without the near one's atlases.)
+        GpuGiBlock own = (pc.flags & 1) != 0 ? ubo.gi_far : ubo.gi;
+        if ((own.flags & gi_flag_enabled) != 0)
         {
             float coverage;
-            float3 indirect = gi_sample_irradiance(ubo, point, normal, -direction, coverage);
+            float3 indirect = gi_sample_block(ubo, own, point, normal, -direction, coverage);
             incoming += indirect * coverage;
         }
 

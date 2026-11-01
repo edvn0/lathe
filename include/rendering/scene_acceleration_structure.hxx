@@ -53,6 +53,7 @@ public:
         std::uint32_t vertex_count = 0;
         std::uint32_t index_count = 0;
         VkIndexType index_type = VK_INDEX_TYPE_UINT32;
+        std::uint32_t revision = 0;
     };
 
     struct Stats {
@@ -150,6 +151,7 @@ private:
         VkDeviceSize index_offset = 0;
         std::uint32_t vertex_count = 0;
         std::uint32_t index_count = 0;
+        std::uint32_t revision = 0;
         VkDeviceSize scratch_size = 0;
         std::uint64_t last_used = 0;
     };
