@@ -583,6 +583,11 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                                       .color = static_cast<std::uint32_t>(tracy::Color::DeepPink),
                               },
                               [&](frame_graph::PassBuilder &pass) {
+                                  // The skinned instances' bottom levels are built from the skinning output.
+                                  if (skinning_active) {
+                                      [[maybe_unused]] auto const skinned = pass.read(
+                                              skin_scratch, frame_graph::Use::shader_read, compute_stage);
+                                  }
                                   scene_tlas = pass.write(scene_tlas, frame_graph::Use::acceleration_structure_build);
                                   pass.side_effect();
 

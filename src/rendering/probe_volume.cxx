@@ -17,7 +17,7 @@
 namespace {
     constexpr auto trace_slice = std::uint32_t{64};
     constexpr auto bytes_per_ray = VkDeviceSize{8};
-    constexpr auto bytes_per_probe_state = VkDeviceSize{48};
+    constexpr auto bytes_per_probe_state = VkDeviceSize{64};
     constexpr auto group = std::uint32_t{8};
 
     // Mirrors PushConstants in gi_probe_trace.slang.

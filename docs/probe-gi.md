@@ -408,3 +408,29 @@ crescent in the shadow mask); the GI will want a normal bias or a finer LOD for 
   its material's average, so a shared texture atlas of coloured bulbs tints them all alike; blend is still the slow pass.
   The interim point lights (`synthesize_emissive_lights`, `spawn_model_lights`) are untouched, so the editor double
   lights emissives until the phase 6 cvar.
+
+### Phase 5 (done, terrain open): dynamic scenes
+
+- **Moving rigid instances, lights and sun** need no new machinery (the TLAS is rebuilt every frame, lights and the sun are
+  read from the UBO each frame). What was missing is how fast the probes follow: hysteresis 0.97 fades over seconds.
+  `gi_probe_classify` now keeps a slow average of each probe's mean ray radiance (state float4 `[3]`, so a probe is 64
+  bytes) and flags a probe whose mean strays by more than 35% (luminance); the blend then uses hysteresis 0.4 for it until
+  the average catches up. `assets/scripts/gi_test/dynamic.lua` (a box sliding in front of coloured walls, an orbiting
+  point light, a sun sinking from 60 to 8 degrees) shows the lighting following with no visible lag.
+- **Skinned meshes.** The skinning output (`CompressedModelVertex` in the per-frame skin scratch buffer, same layout as the
+  arena) is read in place, so every skinned instance gets a bottom level structure of its own, rebuilt each frame
+  (`SceneAccelerationStructure::add_skinned`, called where `emit_batches` creates the skin job, so it is the LOD the
+  instance is drawn at). A full rebuild rather than a refit: nothing to keep between frames, nothing to invalidate. The
+  structures live in a per frame slot storage buffer, created and destroyed with the slot. The TLAS pass now declares a
+  read of the skin scratch buffer so it runs after the skin pass; the scratch buffer has the build input usage. A
+  skinned instance is added only within `0.5 * max(count.x, count.z) * spacing + 8` m of the camera and while the frame's
+  budget of 200,000 skinned vertices lasts (`max_skinned_vertices`): without a budget the 49 characters of the `moving` game
+  (1.67 M vertices, 2891 tiny structures) cost 7.2 ms in the TLAS pass; with it 1.7 ms. The per structure overhead
+  dominates, not the vertices, so merging a character's submeshes into one structure would be the next saving.
+  Instances beyond the budget are not in the scene (they neither occlude nor bounce).
+- **Open: terrain.** Not in the TLAS, so a ray that would hit it sees sky: the ground is a hole in the probes' world and
+  the sky leaks in below it. Options for the owner: (a) a BLAS per terrain chunk from the chunk meshes (needs the chunk
+  vertex format and a streaming hook; frees with the chunk), (b) a coarse proxy (a few large height tiles) for tracing
+  only, (c) leave it out and add a ground plane in the scene. Waiting on a decision.
+- **Numbers** (Release): `moving` with 49 characters and `--gi`: TLAS pass 1.73 ms (7.2 ms without the budget), skin
+  0.13 ms. Debug validation clean on `moving` and `dynamic`.

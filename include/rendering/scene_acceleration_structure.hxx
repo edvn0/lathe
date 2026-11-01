@@ -97,6 +97,24 @@ public:
     auto add(Geometry const &geometry, std::uint32_t material_index, std::span<glm::mat4 const *const> transforms,
              std::uint32_t flags = 0) -> void;
 
+    // A skinned instance: its vertices were skinned this frame into `vertex_address` (CompressedModelVertex, stride 20), so
+    // it gets a bottom level structure of its own, rebuilt from them every frame (a refit would not be cheaper for the
+    // counts a character has). The transform is the instance's world matrix; the skinned vertices are in model space. Skipped
+    // when the geometry is not usable.
+    struct SkinnedGeometry {
+        VkDeviceAddress vertex_address = 0;
+        VkDeviceAddress index_address = 0;
+        std::uint32_t vertex_count = 0;
+        std::uint32_t index_count = 0;
+    };
+    auto add_skinned(SkinnedGeometry const &geometry, std::uint32_t material_index, glm::mat4 const &transform,
+                     std::uint32_t flags = 0) -> void;
+    // Skinned vertices that get a structure per frame (the builds cost about 4 ms per million vertices); instances beyond
+    // the budget are left out of the scene, so they neither occlude nor bounce light for the probes.
+    static constexpr auto max_skinned_vertices = std::uint32_t{200'000};
+    // True between begin_frame and end_frame.
+    [[nodiscard]] auto building() const noexcept -> bool { return building_; }
+
     // Uploads the instances, sizes the per frame buffers and the TLAS, and rewrites the descriptor when the TLAS changed.
     // Call after the last add() and before the frame graph is built.
     auto end_frame() -> void;
@@ -143,7 +161,20 @@ private:
         VkDeviceSize scratch_offset = 0;
     };
 
+    struct DynamicBuild {
+        SkinnedGeometry geometry;
+        VkDeviceSize size = 0;
+        VkDeviceSize scratch = 0;
+        VkDeviceSize storage_offset = 0;
+        VkDeviceSize scratch_offset = 0;
+        VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
+        std::uint32_t instance_slot = 0;
+    };
+
     struct FrameData {
+        // The bottom levels of this frame's skinned instances, and the storage they live in.
+        Buffer dynamic_storage;
+        std::vector<VkAccelerationStructureKHR> dynamic_handles;
         Buffer instances;
         Buffer table;
         Buffer scratch;
@@ -178,6 +209,13 @@ private:
     std::vector<VkAccelerationStructureInstanceKHR> staged_instances_;
     std::vector<InstanceData> staged_table_;
     std::vector<PendingBuild> pending_;
+    std::vector<DynamicBuild> dynamic_;
+    VkDeviceSize dynamic_scratch_ = 0;
+    std::uint32_t dynamic_vertices_ = 0;
+    std::uint32_t dynamic_skipped_ = 0;
+    // (acceleration structure size, build scratch size) by vertex and triangle count.
+    std::unordered_map<std::uint64_t, std::array<VkDeviceSize, 2>> dynamic_sizes_;
+    bool building_ = false;
     VkDeviceSize pending_scratch_ = 0;
     std::uint32_t waiting_ = 0;
     bool warned_misaligned_ = false;

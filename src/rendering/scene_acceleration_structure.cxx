@@ -108,6 +108,10 @@ auto SceneAccelerationStructure::destroy() noexcept -> void {
     }
     retired_.clear();
     for (auto &frame: frames_) {
+        for (auto const handle: frame.dynamic_handles) {
+            vkDestroyAccelerationStructureKHR(context_->device, handle, nullptr);
+        }
+        frame.dynamic_storage.destroy();
         destroy_structure(frame.tlas);
         frame.instances.destroy();
         frame.table.destroy();
@@ -173,6 +177,16 @@ auto SceneAccelerationStructure::begin_frame(std::uint32_t frame_index) -> void 
     pending_.clear();
     pending_scratch_ = 0;
     waiting_ = 0;
+    dynamic_.clear();
+    dynamic_scratch_ = 0;
+    dynamic_vertices_ = 0;
+    dynamic_skipped_ = 0;
+    building_ = true;
+    // The skinned structures this slot made two frames ago are done with.
+    for (auto const handle: frames_[frame_].dynamic_handles) {
+        vkDestroyAccelerationStructureKHR(context_->device, handle, nullptr);
+    }
+    frames_[frame_].dynamic_handles.clear();
 
     // Structures a frame in flight may still traverse go only after those frames are done.
     for (auto &entry: retired_) {
@@ -311,13 +325,123 @@ auto SceneAccelerationStructure::add(Geometry const &geometry, std::uint32_t mat
     }
 }
 
+auto SceneAccelerationStructure::add_skinned(SkinnedGeometry const &geometry, std::uint32_t material_index,
+                                             glm::mat4 const &transform, std::uint32_t flags) -> void {
+    if (!ready() || !building_ || geometry.vertex_count == 0 || geometry.index_count < 3) {
+        return;
+    }
+    auto const index = static_cast<std::uint32_t>(staged_table_.size());
+    if (index >= (1U << 24U)) {
+        return;
+    }
+    if (dynamic_vertices_ + geometry.vertex_count > max_skinned_vertices) {
+        ++dynamic_skipped_;
+        return;
+    }
+    dynamic_vertices_ += geometry.vertex_count;
+
+    auto const key = (std::uint64_t{geometry.vertex_count} << 32U) | geometry.index_count;
+    auto found = dynamic_sizes_.find(key);
+    if (found == dynamic_sizes_.end()) {
+        auto const triangle_count = geometry.index_count / 3;
+        auto const shape = triangle_geometry(0, 0, geometry.vertex_count);
+        auto build = VkAccelerationStructureBuildGeometryInfoKHR{
+                .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+                .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+                .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR,
+                .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+                .geometryCount = 1,
+                .pGeometries = &shape,
+        };
+        auto sizes = VkAccelerationStructureBuildSizesInfoKHR{
+                .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+        vkGetAccelerationStructureBuildSizesKHR(context_->device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+                                                &build, &triangle_count, &sizes);
+        found = dynamic_sizes_
+                        .emplace(key, std::array<VkDeviceSize, 2>{(sizes.accelerationStructureSize + 255) / 256 * 256,
+                                                                  align_scratch(sizes.buildScratchSize)})
+                        .first;
+    }
+
+    auto instance = VkAccelerationStructureInstanceKHR{};
+    instance.transform = transform_of(transform);
+    instance.instanceCustomIndex = index & 0xFFFFFFU;
+    instance.mask = 0xFF;
+    instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+    // The reference is filled in by end_frame, when the structure exists.
+    dynamic_.push_back(DynamicBuild{.geometry = geometry,
+                                    .size = found->second[0],
+                                    .scratch = found->second[1],
+                                    .instance_slot = static_cast<std::uint32_t>(staged_instances_.size())});
+    staged_instances_.push_back(instance);
+    staged_table_.push_back(InstanceData{
+            .vertex_address = geometry.vertex_address,
+            .index_address = geometry.index_address,
+            .material_index = material_index,
+            .index_count = geometry.index_count,
+            .flags = flags,
+    });
+}
+
 auto SceneAccelerationStructure::end_frame() -> void {
+    building_ = false;
     if (!ready()) {
         return;
     }
     ZoneScopedNC("Scene acceleration structure upload", tracy::Color::DeepPink);
 
     auto &frame = frames_[frame_];
+
+    // Bottom levels of the skinned instances: one storage buffer, a structure each.
+    if (!dynamic_.empty()) {
+        auto storage_total = VkDeviceSize{0};
+        for (auto &build: dynamic_) {
+            build.storage_offset = storage_total;
+            build.scratch_offset = pending_scratch_ + dynamic_scratch_;
+            storage_total += build.size;
+            dynamic_scratch_ += build.scratch;
+        }
+        if (!frame.dynamic_storage.valid() || frame.dynamic_storage.size() < storage_total) {
+            frame.dynamic_storage.destroy();
+            auto storage = Buffer::create(
+                    *context_, BufferCreateInfo{.size = std::bit_ceil(storage_total),
+                                                .usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+                                                         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                .memory = BufferMemory::device,
+                                                .debug_name = "scene_skinned_blas"});
+            if (storage) {
+                frame.dynamic_storage = std::move(*storage);
+            }
+        }
+        for (auto &build: dynamic_) {
+            auto &instance = staged_instances_[build.instance_slot];
+            if (!frame.dynamic_storage.valid()) {
+                instance.accelerationStructureReference = 0;
+                continue;
+            }
+            auto const create_info = VkAccelerationStructureCreateInfoKHR{
+                    .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR,
+                    .buffer = frame.dynamic_storage.buffer,
+                    .offset = build.storage_offset,
+                    .size = build.size,
+                    .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+            };
+            if (vkCreateAccelerationStructureKHR(context_->device, &create_info, nullptr, &build.handle) !=
+                VK_SUCCESS) {
+                build.handle = VK_NULL_HANDLE;
+                instance.accelerationStructureReference = 0;
+                continue;
+            }
+            frame.dynamic_handles.push_back(build.handle);
+            auto const address_info = VkAccelerationStructureDeviceAddressInfoKHR{
+                    .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR,
+                    .accelerationStructure = build.handle,
+            };
+            instance.accelerationStructureReference =
+                    vkGetAccelerationStructureDeviceAddressKHR(context_->device, &address_info);
+        }
+    }
+
     auto const count = static_cast<std::uint32_t>(staged_instances_.size());
     frame.instance_count = count;
 
@@ -400,7 +524,7 @@ auto SceneAccelerationStructure::end_frame() -> void {
     }
 
     // One scratch buffer serves the BLAS builds (a region each) and then the TLAS build.
-    auto const scratch_needed = std::max(pending_scratch_, frame.tlas_scratch) + scratch_alignment_;
+    auto const scratch_needed = std::max(pending_scratch_ + dynamic_scratch_, frame.tlas_scratch) + scratch_alignment_;
     if (!frame.scratch.valid() || frame.scratch.size() < scratch_needed) {
         frame.scratch.destroy();
         auto scratch = Buffer::create(*context_, BufferCreateInfo{.size = std::bit_ceil(scratch_needed),
@@ -474,6 +598,41 @@ auto SceneAccelerationStructure::record_build(VkCommandBuffer command_buffer) ->
         vkCmdBuildAccelerationStructuresKHR(command_buffer, static_cast<std::uint32_t>(builds.size()), builds.data(),
                                             range_pointers.data());
 
+    }
+
+    auto dynamic_builds = std::vector<VkAccelerationStructureBuildGeometryInfoKHR>{};
+    auto dynamic_shapes = std::vector<VkAccelerationStructureGeometryKHR>{};
+    auto dynamic_ranges = std::vector<VkAccelerationStructureBuildRangeInfoKHR>{};
+    dynamic_shapes.reserve(dynamic_.size());
+    for (auto const &build: dynamic_) {
+        if (build.handle == VK_NULL_HANDLE) {
+            continue;
+        }
+        dynamic_shapes.push_back(triangle_geometry(build.geometry.vertex_address + position_offset,
+                                                   build.geometry.index_address, build.geometry.vertex_count));
+        dynamic_ranges.push_back(
+                VkAccelerationStructureBuildRangeInfoKHR{.primitiveCount = build.geometry.index_count / 3});
+        dynamic_builds.push_back(VkAccelerationStructureBuildGeometryInfoKHR{
+                .sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR,
+                .type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+                .flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR,
+                .mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR,
+                .dstAccelerationStructure = build.handle,
+                .geometryCount = 1,
+                .pGeometries = &dynamic_shapes.back(),
+                .scratchData = {.deviceAddress = scratch_base + build.scratch_offset},
+        });
+    }
+    if (!dynamic_builds.empty()) {
+        auto range_pointers = std::vector<VkAccelerationStructureBuildRangeInfoKHR const *>{};
+        for (auto const &range: dynamic_ranges) {
+            range_pointers.push_back(&range);
+        }
+        vkCmdBuildAccelerationStructuresKHR(command_buffer, static_cast<std::uint32_t>(dynamic_builds.size()),
+                                            dynamic_builds.data(), range_pointers.data());
+    }
+
+    if (!pending_.empty() || !dynamic_builds.empty()) {
         // The top level reads the bottom levels and reuses the scratch memory.
         memory_barrier(command_buffer, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
                        VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR, VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,

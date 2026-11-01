@@ -1932,7 +1932,12 @@ auto Renderer::create_frame_resources(RendererFrame &frame, VkExtent2D extent, s
                                                                    .size = std::max<VkDeviceSize>(
                                                                            skin_scratch_capacity_, 256),
                                                                    .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                                                            // Skinned instances get a bottom level
+                                                                            // structure built from the output.
+                                                                            (context_.ray_query_supported
+                                                                                     ? VkBufferUsageFlags{VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR}
+                                                                                     : VkBufferUsageFlags{0}),
                                                                    .memory = BufferMemory::device,
                                                                    .debug_name = "renderer.frame_skin_scratch",
                                                            });
@@ -4389,6 +4394,30 @@ auto Renderer::emit_batches(RendererFrame &frame, BatchBuild &build) -> std::exp
                         });
                         frame.skin_scratch_used += skin_bytes;
                         frame.skinned_vertices += skin_vertex_count;
+
+                        // A skinned instance deforms every frame, so it gets a bottom level structure of its own, built
+                        // from the skinned output at the LOD it is drawn at.
+                        // Only those near enough to matter to the probe volume.
+                        auto const &skin_settings = probe_volume_.settings();
+                        auto const skin_reach = 0.5F * static_cast<float>(std::max(skin_settings.counts[0],
+                                                                                    skin_settings.counts[2])) *
+                                                        skin_settings.spacing +
+                                                8.0F;
+                        if (scene_rt_.building() && batch.transforms[instance] != nullptr &&
+                            glm::distance(glm::vec3{(*batch.transforms[instance])[3]}, frame.lod_camera_position) <=
+                                    skin_reach &&
+                            geometry.indices.index_type == VK_INDEX_TYPE_UINT32 &&
+                            geometry.vertices.vertex_stride == SceneAccelerationStructure::vertex_stride &&
+                            instance < batch.transforms.size()) {
+                            scene_rt_.add_skinned(
+                                    SceneAccelerationStructure::SkinnedGeometry{
+                                            .vertex_address = instance_vertex_address,
+                                            .index_address = geometry_arena_.device_address(geometry.indices.bytes),
+                                            .vertex_count = skin_vertex_count,
+                                            .index_count = geometry.indices.index_count,
+                                    },
+                                    material_index, *batch.transforms[instance]);
+                        }
                     } else {
                         ++frame.skin_fallback_instances;
                     }
@@ -4666,8 +4695,6 @@ auto Renderer::update_ray_tracing_scene(std::uint32_t frame_index) -> void {
     add_batches(opaque_batches_);
     add_batches(double_sided_batches_);
     add_batches(mask_batches_);
-
-    scene_rt_.end_frame();
 }
 
 auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices const &matrices,
@@ -4836,7 +4863,12 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
         probe_volume_.begin_frame(camera_position, light_.direction, light_.colour * light_.intensity,
                                   environment_.ubo_block());
     }
-    if (auto emitted = emit_batches(frame, build_state); !emitted) {
+    auto emitted = emit_batches(frame, build_state);
+    if (!secondary) {
+        // The skinned instances join the scene while the batches are emitted; now the instance list is complete.
+        scene_rt_.end_frame();
+    }
+    if (!emitted) {
         return std::unexpected(emitted.error());
     }
 

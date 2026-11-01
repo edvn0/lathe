@@ -29,13 +29,16 @@ struct Push
 
 static const float gi_max_radiance = 64.0;
 
-float probe_hysteresis(float age)
+float probe_hysteresis(uint slot)
 {
+    float age = pc.probe_state[slot * gi_state_stride + 2].w;
     if (age < 0.5)
     {
         return 0.0;
     }
-    return age < 8.0 ? min(0.85, pc.hysteresis) : pc.hysteresis;
+    float h = age < 8.0 ? min(0.85, pc.hysteresis) : pc.hysteresis;
+    // The probe's lighting just changed a lot: follow it.
+    return pc.probe_state[slot * gi_state_stride + 3].w > 0.5 ? min(h, 0.4) : h;
 }
 
 void unpack(uint2 packed, out float3 radiance, out float distance)
@@ -95,10 +98,9 @@ void irradiance_cs(uint3 id : SV_DispatchThreadID)
     }
     float3 fresh = weight_sum > 1e-4 ? sum / weight_sum : float3(0.0);
 
-    float age = pc.probe_state[slot * gi_state_stride + 2].w;
     float4 old = storage_2d[pc.atlas][id.xy];
     // A new probe takes the fresh value outright: the atlas may hold anything (NaN included) for it.
-    float h = probe_hysteresis(age);
+    float h = probe_hysteresis(slot);
     storage_2d[pc.atlas][id.xy] = float4(h <= 0.0 ? fresh : lerp(fresh, old.rgb, h), 1.0);
 }
 
@@ -139,9 +141,8 @@ void distance_cs(uint3 id : SV_DispatchThreadID)
     }
     float2 fresh = weight_sum > 1e-6 ? sum / weight_sum : float2(cap, cap * cap);
 
-    float age = pc.probe_state[slot * gi_state_stride + 2].w;
     float4 old = storage_2d[pc.atlas][id.xy];
-    float h = probe_hysteresis(age);
+    float h = probe_hysteresis(slot);
     storage_2d[pc.atlas][id.xy] = float4(h <= 0.0 ? fresh : lerp(fresh, old.rg, h), 0.0, 1.0);
 }
 

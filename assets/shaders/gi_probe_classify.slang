@@ -91,7 +91,25 @@ void main_cs(uint3 id : SV_DispatchThreadID)
         offset *= limit * rsqrt(length_sq);
     }
 
+    float3 mean = sum / float(pc.rays_per_probe);
+
+    // Lighting changed a lot (a light or the sun moved, a door opened) when this frame's mean strays from the slow average:
+    // the blend then takes the new rays in faster instead of fading over seconds.
+    float4 history = pc.probe_state[slot * gi_state_stride + 3];
+    if (age < 0.5)
+    {
+        history = float4(mean, 0.0);
+    }
+    else
+    {
+        float now = dot(mean, float3(0.2126, 0.7152, 0.0722));
+        float before = dot(history.rgb, float3(0.2126, 0.7152, 0.0722));
+        bool changed = abs(now - before) / (max(now, before) + 0.02) > 0.35;
+        history = float4(lerp(history.rgb, mean, changed ? 0.5 : 0.05), changed ? 1.0 : 0.0);
+    }
+
     pc.probe_state[slot * gi_state_stride] = float4(offset, inside ? 0.0 : 1.0);
-    pc.probe_state[slot * gi_state_stride + 1] = float4(sum / float(pc.rays_per_probe), fraction);
+    pc.probe_state[slot * gi_state_stride + 1] = float4(mean, fraction);
+    pc.probe_state[slot * gi_state_stride + 3] = history;
     pc.probe_state[slot * gi_state_stride + 2] = float4(float3(world_index), age);
 }

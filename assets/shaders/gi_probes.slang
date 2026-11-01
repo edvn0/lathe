@@ -8,15 +8,17 @@ import scene_types;
 // x + counts.x * (y + counts.y * z). Each probe owns a tile of two atlases: irradiance (8x8 octahedral texels plus a
 // one texel border) and distance (16x16 plus a border), tiles laid out count.x * count.y to a row.
 //
-// Per probe state (probe_state, three float4 per probe):
+// Per probe state (probe_state, four float4 per probe):
 //   [0] relocation offset xyz, w: 1 active, 0 off (inside geometry)
 //   [1] mean ray radiance rgb, w: the fraction of rays that hit a back face
 //   [2] the world index the slot currently holds (exact in a float), w: frames since the slot was (re)assigned
+//   [3] slow average of the mean ray radiance rgb, w: 1 while the probe's lighting just changed a lot (a moving light or
+//       sun, a door): the blend then lets the new rays in faster
 public static const uint gi_irradiance_interior = 8;
 public static const uint gi_irradiance_tile = 10;
 public static const uint gi_distance_interior = 16;
 public static const uint gi_distance_tile = 18;
-public static const uint gi_state_stride = 3;
+public static const uint gi_state_stride = 4;
 
 // Bits of GpuGiBlock::flags.
 public static const uint gi_flag_enabled = 1;
