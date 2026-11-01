@@ -544,10 +544,10 @@ auto Runtime::handle_event(KeyPressedEvent ev) -> bool {
                 return true;
             }
         }
-
     }
 
-    return true;
+    // Everything else goes on to the game (its handlers run later): consuming it here left a playing game with no keys.
+    return false;
 }
 
 auto Runtime::handle_event(KeyReleasedEvent ev) -> bool {
