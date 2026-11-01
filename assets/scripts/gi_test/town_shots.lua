@@ -5,9 +5,9 @@
 local town = require("gi_test.town_walk")
 
 local POSES = {
-    { eye = { 277, 2.5, 290 }, look = { 240, 6, 290 } },
-    { eye = { 277, 2.5, 330 }, look = { 250, 15, 330 } },
-    { eye = { 277, 2.5, 250 }, look = { 250, 12, 250 } },
+    { eye = { 276, 2.6, 296 }, look = { 292, 1.2, 304 }, fov = 70 }, -- the west staircase of the plaza
+    { eye = { 270, 14, 266 }, look = { 304, 4, 304 }, fov = 70 }, -- the plaza from the south-west
+    { eye = { 492, 10, 70 }, look = { 516, 8, 84 }, fov = 70 }, -- the watchtower
     { eye = { 277, 3, 200 }, look = { 277, 20, 262 } },
     { eye = { 277, 60, 304 }, look = { 230, 10, 304 }, fov = 80 },
 }
