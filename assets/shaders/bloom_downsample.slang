@@ -1,6 +1,7 @@
 module bloom_downsample;
 
 import bindless;
+import common;
 
 struct DownsamplePushConstants
 {
@@ -17,7 +18,6 @@ struct DownsamplePushConstants
     float knee;
 };
 
-public [[vk::binding(4, 0)]] RWTexture2D<float4> storage_2d[];
 
 [vk::push_constant] DownsamplePushConstants pc;
 

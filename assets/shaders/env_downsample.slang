@@ -1,6 +1,7 @@
 module env_downsample;
 
 import bindless;
+import common;
 
 struct EnvDownsamplePushConstants
 {
@@ -10,7 +11,6 @@ struct EnvDownsamplePushConstants
     uint dst_size;
 };
 
-public [[vk::binding(4, 0)]] RWTexture2D<float4> storage_2d[];
 
 [vk::push_constant] EnvDownsamplePushConstants pc;
 

@@ -6,9 +6,9 @@
 //                  filtering across the octahedron's edge is seamless (a separate pass, the interior is final by then)
 // New and just reassigned probes take the new value outright (hysteresis 0), young ones blend fast.
 import bindless;
+import common;
 import gi_probes;
 
-public [[vk::binding(4, 0)]] RWTexture2D<float4> storage_2d[];
 
 struct Push
 {

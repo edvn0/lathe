@@ -7,6 +7,7 @@ module atmosphere;
 // radius so the floats stay well conditioned at real scale.
 
 import bindless;
+import common;
 
 // Mirrors AtmosphereParams in planet_system.cxx.
 struct AtmospherePush
@@ -26,11 +27,9 @@ struct AtmospherePush
     float padding;
 };
 
-public [[vk::binding(4, 0)]] RWTexture2D<float4> storage_2d[];
 
 [vk::push_constant] AtmospherePush pc;
 
-static const float pi = 3.14159265358979323846;
 // Sea-level scattering coefficients (1/m) and scale heights (m) for Earth.
 static const float3 rayleigh_scattering = float3(5.802e-6, 13.558e-6, 33.1e-6);
 static const float rayleigh_height = 8000.0;

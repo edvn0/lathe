@@ -1,6 +1,7 @@
 module env_sky_to_cube;
 
 import bindless;
+import common;
 import scene_types;
 import environment;
 
@@ -14,7 +15,6 @@ struct EnvSkyToCubePushConstants
     uint _padding;
 };
 
-public [[vk::binding(4, 0)]] RWTexture2D<float4> storage_2d[];
 
 [vk::push_constant] EnvSkyToCubePushConstants pc;
 

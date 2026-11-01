@@ -1,6 +1,7 @@
 module bloom_upsample;
 
 import bindless;
+import common;
 
 struct UpsamplePushConstants
 {
@@ -14,7 +15,6 @@ struct UpsamplePushConstants
     float filter_radius;
 };
 
-public [[vk::binding(4, 0)]] RWTexture2D<float4> storage_2d[];
 
 [vk::push_constant] UpsamplePushConstants pc;
 

@@ -13,18 +13,10 @@
 // Small emissive pieces (a bulb) are too small for random rays to find, so the renderer lists them as explicit emitters
 // (spheres), and lights them like point lights.
 import bindless;
+import common;
+import ray_tracing;
 import scene_types;
 import gi_probes;
-
-struct RtInstanceData
-{
-    Ptr<CompressedVertex> vertices;
-    Ptr<uint> indices;
-    uint material_index;
-    uint index_count;
-    uint flags;
-    uint reserved;
-};
 
 // Mirrors ProbeVolume::Emitter.
 struct GpuEmitter
@@ -80,11 +72,8 @@ struct PushConstants
 
 [vk::push_constant] PushConstants pc;
 
-public [[vk::binding(6, 0)]] RaytracingAccelerationStructure scene_tlas;
-
 static const float gi_max_distance = 500.0;
 static const float gi_sky_mip = 1.0;
-static const float pi = 3.14159265358979;
 static const uint instance_flag_explicit_emitter = 1;
 
 float3 rotate_y_vector(float3 v, float2 cos_sin)
@@ -98,18 +87,6 @@ float3 sky(float3 direction, float mip)
     float3 d = rotate_y_vector(direction, float2(ubo.environment_rotation.x, -ubo.environment_rotation.y));
     return sampled_cube[ubo.prefilter_cube_texture].SampleLevel(samplers[ubo.environment_sampler], d, mip).rgb *
            ubo.environment_intensity.y;
-}
-
-float3 vertex_position(Ptr<CompressedVertex> vertices, uint index)
-{
-    CompressedVertex v = vertices[index];
-    return float3(f16tof32(v.position_x), f16tof32(v.position_y), f16tof32(v.position_z));
-}
-
-float2 vertex_uv(Ptr<CompressedVertex> vertices, uint index)
-{
-    CompressedVertex v = vertices[index];
-    return float2(f16tof32(v.texcoord_u), f16tof32(v.texcoord_v));
 }
 
 bool occluded(float3 origin, float3 direction, float t_max)

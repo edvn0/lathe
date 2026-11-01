@@ -1,4 +1,5 @@
 import bindless;
+import common;
 import scene_types;
 import wind;
 import pbr;
@@ -134,13 +135,6 @@ struct OutputFS
     float outline : SV_Target1;
 #endif
 };
-
-uint pcg_hash(uint value)
-{
-    const uint state = value * 747796405u + 2891336453u;
-    const uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
-}
 
 float3 debug_meshlet_colour(uint cluster_id)
 {

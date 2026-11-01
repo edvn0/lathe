@@ -8,21 +8,11 @@
 // flag_alpha_tested, not opaque in the TLAS) is walked through ray query candidates: a candidate counts as a blocker only
 // where the material's alpha test passes, so leaves cast the shadow of their leaves, not of their cards.
 import bindless;
+import common;
+import ray_tracing;
 import scene_types;
 import light_clusters;
 
-public [[vk::binding(4, 0)]] RWTexture2D<float4> storage_2d[];
-
-// Mirrors SceneAccelerationStructure::InstanceData.
-struct RtInstanceData
-{
-    Ptr<CompressedVertex> vertices;
-    Ptr<uint> indices;
-    uint material_index;
-    uint index_count;
-    uint flags;
-    uint reserved;
-};
 
 // Mirrors Push in ray_traced_shadows.cxx.
 struct PushConstants
@@ -52,21 +42,7 @@ static const uint flag_local = 2u;
 
 [vk::push_constant] PushConstants pc;
 
-public [[vk::binding(6, 0)]] RaytracingAccelerationStructure scene_tlas;
-
 static const uint shadow_rays = 4;
-
-float3 vertex_position(Ptr<CompressedVertex> vertices, uint index)
-{
-    CompressedVertex v = vertices[index];
-    return float3(f16tof32(v.position_x), f16tof32(v.position_y), f16tof32(v.position_z));
-}
-
-float2 vertex_uv(Ptr<CompressedVertex> vertices, uint index)
-{
-    CompressedVertex v = vertices[index];
-    return float2(f16tof32(v.texcoord_u), f16tof32(v.texcoord_v));
-}
 
 // The renderer draws with a negative height viewport, so NDC y points up while the pixel row points down; the depth
 // buffer is reversed (1 at the near plane, 0 at the far plane and the sky), so NDC z is 1 - depth.

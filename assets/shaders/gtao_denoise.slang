@@ -1,6 +1,7 @@
 module gtao_denoise;
 
 import bindless;
+import common;
 import scene_types;
 
 struct GtaoDenoisePushConstants
@@ -18,7 +19,6 @@ struct GtaoDenoisePushConstants
     uint _padding;
 };
 
-public [[vk::binding(4, 0)]] RWTexture2D<float4> storage_2d[];
 
 [vk::push_constant] GtaoDenoisePushConstants pc;
 

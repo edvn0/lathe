@@ -1,4 +1,5 @@
 import bindless;
+import common;
 
 struct Vertex
 {
@@ -44,12 +45,6 @@ VertexOutput main_vs(uniform PC pc, uint vert_id: SV_VertexID)
     var out_position = mul(proj, float4(v.xy.x, v.xy.y, 0, 1));
 
     return VertexOutput(out_position, out_color, out_uv);
-}
-
-float3 srgb_to_linear(float3 c) {
-    float3 lo = c / 12.92;
-    float3 hi = pow((c + 0.055) / 1.055, 2.4);
-    return lerp(lo, hi, step(0.04045, c));
 }
 
 [shader("fragment")]
