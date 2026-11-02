@@ -48,6 +48,7 @@ namespace cvars {
 
     // Paths.
     extern CVar<std::string> data_dir;
+    extern CVar<std::vector<std::string>> mount;
     extern CVar<std::string> project;
 
     // Display.

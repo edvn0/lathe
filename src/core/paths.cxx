@@ -115,6 +115,14 @@ auto Paths::resolve(PathsOptions const &options) -> Paths {
     auto paths = Paths{};
     std::error_code error;
 
+    for (auto const &mount: options.mounts) {
+        auto const absolute = std::filesystem::absolute(mount, error).lexically_normal();
+
+        if (!std::ranges::contains(paths.mounts_, absolute)) {
+            paths.mounts_.push_back(absolute);
+        }
+    }
+
     if (options.project_root && !options.data_dir) {
         auto const root = std::filesystem::absolute(*options.project_root, error).lexically_normal();
 
@@ -163,6 +171,22 @@ auto Paths::resolve(PathsOptions const &options) -> Paths {
     return paths;
 }
 
+auto Paths::search_roots() const -> std::vector<std::filesystem::path> {
+    std::vector<std::filesystem::path> roots{data_};
+
+    for (auto const &mount: mounts_) {
+        if (!std::ranges::contains(roots, mount)) {
+            roots.push_back(mount);
+        }
+    }
+
+    if (!std::ranges::contains(roots, engine_)) {
+        roots.push_back(engine_);
+    }
+
+    return roots;
+}
+
 auto Paths::data(std::string_view relative) const -> std::optional<DataPath> {
     auto const path = paths_detail::sanitise(relative);
 
@@ -170,11 +194,11 @@ auto Paths::data(std::string_view relative) const -> std::optional<DataPath> {
         return std::nullopt;
     }
 
-    if (engine_ != data_) {
-        std::error_code error;
+    std::error_code error;
 
-        if (!std::filesystem::exists(data_ / *path, error) && std::filesystem::exists(engine_ / *path, error)) {
-            return DataPath{engine_, *path};
+    for (auto const &root: search_roots()) {
+        if (std::filesystem::exists(root / *path, error)) {
+            return DataPath{root, *path};
         }
     }
 
@@ -197,7 +221,7 @@ auto Paths::data_directories(std::string_view relative) const -> std::vector<std
 
     std::error_code error;
 
-    for (auto const &root: {data_, engine_}) {
+    for (auto const &root: search_roots()) {
         auto const directory = root / *path;
 
         if (std::filesystem::is_directory(directory, error) && !std::ranges::contains(directories, directory)) {
@@ -211,7 +235,7 @@ auto Paths::data_directories(std::string_view relative) const -> std::vector<std
 auto Paths::relative_to_roots(std::filesystem::path const &absolute) const -> std::optional<std::filesystem::path> {
     auto const normal = absolute.lexically_normal();
 
-    for (auto const &root: {data_, engine_}) {
+    for (auto const &root: search_roots()) {
         auto relative = normal.lexically_relative(root);
 
         if (!relative.empty() && *relative.begin() != "..") {
@@ -367,8 +391,11 @@ auto Paths::finish_access_recording() -> std::vector<std::string> {
     std::error_code error;
 
     for (auto const &logical: paths_detail::accessed) {
-        if (std::filesystem::is_regular_file(current().data_root() / logical, error)) {
-            files.push_back(logical);
+        for (auto const &root: current().search_roots()) {
+            if (std::filesystem::is_regular_file(root / logical, error)) {
+                files.push_back(logical);
+                break;
+            }
         }
     }
 

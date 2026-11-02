@@ -79,6 +79,48 @@ TEST_CASE("a project's content shadows the engine's, which stays reachable") {
     CHECK(paths.relative_to_roots(engine / "assets" / "shared.txt") == std::filesystem::path{"assets/shared.txt"});
 }
 
+TEST_CASE("mounts are searched after the project and before the engine, in the order given") {
+    auto const project = scratch_directory("lathe_mount_project");
+    auto const engine = scratch_directory("lathe_mount_engine");
+    auto const first = scratch_directory("lathe_mount_first");
+    auto const second = scratch_directory("lathe_mount_second");
+
+    std::filesystem::create_directories(project / "assets");
+    std::filesystem::create_directories(engine / "assets");
+    std::filesystem::create_directories(first / "assets");
+    std::filesystem::create_directories(second / "assets");
+    std::ofstream{project / "assets" / "a.txt"} << "project";
+    std::ofstream{first / "assets" / "a.txt"} << "first";
+    std::ofstream{first / "assets" / "b.txt"} << "first";
+    std::ofstream{second / "assets" / "b.txt"} << "second";
+    std::ofstream{second / "assets" / "c.txt"} << "second";
+    std::ofstream{engine / "assets" / "c.txt"} << "engine";
+    std::ofstream{engine / "assets" / "d.txt"} << "engine";
+
+    auto const paths = Paths::resolve({.project_root = project, .engine_dir = engine, .mounts = {first, second, first}});
+
+    CHECK(paths.mounts() == std::vector{first, second});
+    CHECK(paths.data("assets/a.txt")->absolute() == project / "assets" / "a.txt");
+    CHECK(paths.data("assets/b.txt")->absolute() == first / "assets" / "b.txt");
+    CHECK(paths.data("assets/c.txt")->absolute() == second / "assets" / "c.txt");
+    CHECK(paths.data("assets/d.txt")->absolute() == engine / "assets" / "d.txt");
+    CHECK(paths.data("assets/new.txt")->absolute() == project / "assets" / "new.txt");
+    CHECK(paths.data_directories("assets") == std::vector{project / "assets", first / "assets", second / "assets", engine / "assets"});
+    CHECK(paths.relative_to_roots(second / "assets" / "b.txt") == std::filesystem::path{"assets/b.txt"});
+}
+
+TEST_CASE("a project file's mount lines round-trip in order") {
+    auto const root = scratch_directory("lathe_project_mount_lines");
+    ProjectFile project{.manifest = {.name = "demo", .title = "Demo", .mounts = {"../shared", "extra"}}, .root = root};
+
+    REQUIRE(project.save().has_value());
+
+    auto const loaded = ProjectFile::load(root);
+
+    REQUIRE(loaded.has_value());
+    CHECK(loaded->manifest.mounts == std::vector<std::string>{"../shared", "extra"});
+}
+
 TEST_CASE("recent projects are newest first, deduplicated, and skip ones that are gone") {
     auto const directory = scratch_directory("lathe_recent");
     auto const first = directory / "first";

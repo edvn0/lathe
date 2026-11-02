@@ -139,7 +139,7 @@ auto LuaGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &
     auto const source = read_data_file(entry);
 
     if (!source) {
-        self.fatal_error = "the entry script '" + entry + "' was not found in the data directory";
+        self.fatal_error = "the entry script '" + entry + "' was not found in the data directory or a mount";
         error("[lua] {}", self.fatal_error);
 
         return;

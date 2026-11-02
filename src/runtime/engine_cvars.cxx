@@ -187,6 +187,14 @@ namespace cvars {
             .help = "Game data directory (default: an installed game's data/, else the working directory)",
             .hint = "DIR",
     }};
+    CVar<std::vector<std::string>> mount{{
+            .name = "mount",
+            .group = "Paths",
+            .help = "Mount one more content directory on top of the project's `mount` lines (assets/scripts, assets/models, ... "
+                    "laid out like the data directory; repeatable; searched after the data directory and before the "
+                    "engine's, in the order given)",
+            .hint = "DIR",
+    }};
     CVar<std::string> project{{
             .name = "project",
             .group = "Paths",

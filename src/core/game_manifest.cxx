@@ -203,6 +203,8 @@ auto GameManifest::load(std::filesystem::path const &path, bool require_game) ->
             manifest.entry = value;
         } else if (key == "scene") {
             manifest.scene = value;
+        } else if (key == "mount") {
+            manifest.mounts.emplace_back(value);
         }
     }
 
@@ -222,6 +224,10 @@ auto GameManifest::to_text() const -> std::string {
 
     if (!scene.empty()) {
         text += std::format("scene = \"{}\"\n", scene);
+    }
+
+    for (auto const &mount: mounts) {
+        text += std::format("mount = \"{}\"\n", mount);
     }
 
     if (gi != GiSettings{}) {
