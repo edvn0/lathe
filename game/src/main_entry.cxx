@@ -94,3 +94,10 @@ auto create_game(std::string_view name) -> std::unique_ptr<IGame> {
 
     return std::make_unique<BasicGame>();
 }
+
+auto native_script_modules() -> std::vector<std::pair<std::string, lua_CFunction>> {
+    return {
+            {"native.chess", &luaopen_lathe_chess},
+            {"native.net", &luaopen_lathe_net},
+    };
+}
