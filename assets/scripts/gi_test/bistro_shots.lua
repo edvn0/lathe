@@ -4,9 +4,6 @@
 
 local MODEL = "/home/edwin/Downloads/Bistro_v5_2/BistroExterior.glb"
 
----@type GameScript
-local M = {}
-
 local SHOTS = {
     { eye = { -2.83, 2.4, 0 }, look = { -2.83, 1.2, 12 }, fov = 75 },
     { eye = { -2.83, 45, -35 }, look = { -2.83, 0, 5 }, fov = 60 },
@@ -16,7 +13,7 @@ local SHOTS = {
 }
 local shot = 1
 
-function M.on_populate()
+function on_populate()
     scene.clear()
     local city = scene.spawn("bistro")
     city:set_model(assets.load_model(MODEL, { min_extent = 0.35, double_sided = true }))
@@ -27,14 +24,12 @@ end
 local SHOT_FRAMES = 200
 local frames = 0
 
-function M.on_update(_)
+function on_update(_)
     frames = frames + 1
     shot = math.min(#SHOTS, math.floor(frames / SHOT_FRAMES) + 1)
 end
 
-function M.camera(_)
+function on_camera(_)
     local s = SHOTS[shot]
     return { eye = s.eye, target = s.look, fov = s.fov, near = 0.05, far = 1500 }
 end
-
-return M

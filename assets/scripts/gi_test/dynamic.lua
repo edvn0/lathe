@@ -4,9 +4,6 @@
 -- Frames: 0..60 sun high, 60..240 sun sinks from 60 to 8 degrees, the box slides all the time and the light orbits.
 -- Screenshots at 50 (before), 130 (mid sunset), 300 (after).
 
----@type GameScript
-local M = {}
-
 local count = 0
 local function material(colour)
     count = count + 1
@@ -24,7 +21,7 @@ end
 
 local mover, lamp, marker
 
-function M.on_populate()
+function on_populate()
     scene.clear()
     scene.set_environment({ sky = "procedural", skybox = true, ambient = 0.02, exposure_ev = 0, sun_intensity = 3,
                             sun_elevation = 60 })
@@ -42,7 +39,7 @@ end
 
 local frames = 0
 
-function M.on_update(_)
+function on_update(_)
     frames = frames + 1
     local t = frames / 60
     mover:set_position(-3 + 5 * (0.5 + 0.5 * math.sin(t * 0.8)), 1, 0)
@@ -53,8 +50,6 @@ function M.on_update(_)
     end
 end
 
-function M.camera(_)
+function on_camera(_)
     return { eye = { 0, 5, -9 }, target = { 0, 1.5, 1 }, fov = 60, near = 0.05, far = 100 }
 end
-
-return M

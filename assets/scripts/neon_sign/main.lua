@@ -2,9 +2,6 @@
 -- sheds sparks from the outline of the letters. Run it with:
 --   lathe --game=lua --script=assets/scripts/neon_sign/main.lua --player
 
----@type GameScript
-local M = {}
-
 local time = 0
 local sign, open_sign
 
@@ -17,7 +14,7 @@ local function prop(name, model, x, y, z, sx, sy, sz, material)
     return e
 end
 
-function M.on_populate()
+function on_populate()
     scene.clear()
     scene.set_environment({ sky = "flat", skybox = false, ambient = 0.04, exposure_ev = 0, sun_intensity = 0 })
     render.set_bloom({ enabled = true, threshold = 1.0, knee = 0.5, intensity = 0.35 })
@@ -66,7 +63,7 @@ function M.on_populate()
     })
 end
 
-function M.on_update(dt)
+function on_update(dt)
     time = time + dt
 
     -- A neon tube hums and now and then stutters.
@@ -78,8 +75,6 @@ function M.on_update(dt)
     text.draw({ text = "text entity + emissive + text-shaped particles", x = 20, y = 16, size = 20, color = { 0.8, 0.8, 0.9, 1.0 } })
 end
 
-function M.camera(aspect)
+function on_camera(aspect)
     return { eye = { 0, 2.4, -6.5 }, target = { 0, 2.0, 0 }, fov = 50 }
 end
-
-return M

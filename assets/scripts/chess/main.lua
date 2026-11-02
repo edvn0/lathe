@@ -412,12 +412,9 @@ end
 
 -- Scene setup ------------------------------------------------------------------------------------------------------
 
----@type GameScript
-local M = {}
+wants_cursor = true
 
-M.wants_cursor = true
-
-function M.on_populate()
+function on_populate()
     engine:reset()
 
     for _, name in ipairs(PIECES) do
@@ -470,7 +467,7 @@ function M.on_populate()
 end
 
 -- The active scene changed (editor scene -> runtime scene): find our entities again.
-function M.on_bind()
+function on_bind()
     for id = 0, 31 do
         piece_entities[id] = scene.find("piece_" .. id)
     end
@@ -489,7 +486,7 @@ end
 
 -- Per frame ---------------------------------------------------------------------------------------------------------
 
-function M.on_update(dt)
+function on_update(dt)
     if session then
         handle_session_events(session:update(dt))
     end
@@ -543,7 +540,7 @@ function M.on_update(dt)
     place_markers()
 end
 
-function M.camera(aspect)
+function on_camera(aspect)
     local sin, cos = math.sin(camera_angle), math.cos(camera_angle)
 
     -- Orbit the board centre by `camera_angle` around the up axis, rising while it swings.
@@ -560,7 +557,7 @@ end
 
 -- Input --------------------------------------------------------------------------------------------------------------
 
-function M.on_cursor(ndc_x, ndc_y, inside)
+function on_cursor(ndc_x, ndc_y, inside)
     hovered = nil
 
     if inside ~= 0 then
@@ -572,7 +569,7 @@ function M.on_cursor(ndc_x, ndc_y, inside)
     end
 end
 
-function M.on_mouse_button(button)
+function on_mouse_button(button)
     if game.player_mode and screen ~= "playing" then
         return
     end
@@ -586,7 +583,7 @@ function M.on_mouse_button(button)
     end
 end
 
-function M.on_key(k, modifiers)
+function on_key(k, modifiers)
     if game.player_mode then
         if screen == "loading" then
             return
@@ -926,7 +923,7 @@ local function draw_hud()
     end)
 end
 
-function M.on_ui()
+function on_ui()
     if not game.player_mode or screen == "playing" then
         draw_hud()
     elseif screen == "loading" then
@@ -943,5 +940,3 @@ function M.on_ui()
         draw_game_over()
     end
 end
-
-return M

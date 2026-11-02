@@ -88,7 +88,7 @@ namespace {
         }
 
         auto camera(double aspect = 1.777) -> CameraView {
-            auto const result = runtime.call("camera", std::vector<double>{aspect}, 1);
+            auto const result = runtime.call("on_camera", std::vector<double>{aspect}, 1);
 
             REQUIRE(result.ok);
 

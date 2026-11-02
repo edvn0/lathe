@@ -2,19 +2,25 @@
 
 `lua-api/` holds `---@meta` stub files describing everything the engine puts in a game script's environment: the
 libraries `scene`, `assets`, `camera`, `ui`, `game`, `entity`, `compute`, `render`, `text`, `http`, `key` and `mouse`, the `Entity` and `Effect`
-handles with their methods, the option tables (`ParticleOptions`, `UiWindowOptions`, `CameraResult`) and `GameScript`,
-the table of callbacks a script returns. They are never loaded by the engine; they only give completion, hover docs
+handles with their methods, the option tables (`ParticleOptions`, `UiWindowOptions`, `CameraResult`) and the callbacks a script defines
+(`on_populate`, `on_update`, ...; `game_script.lua`). They are never loaded by the engine; they only give completion, hover docs
 and type checks. The repo's `.luarc.json` selects Lua 5.4 (what the engine embeds), points `workspace.library` at
 `lua-api/` and declares the injected globals.
 
-A script opts in to callback checking with an annotation on the table it returns:
+A game script defines its callbacks as global functions, and the stubs describe them, so there is nothing to annotate:
 
 ```lua
----@type GameScript
-local M = {}
-function M.on_update(dt) end
-return M
+function on_populate()
+    scene.spawn("cube")
+end
+
+function on_update(dt) end
 ```
+
+`on_camera(aspect)` is the camera callback (`camera` is already the engine's library). A script that returns a table of
+callbacks instead (`---@type GameScript` on it) still works. State is kept in `local`s; `.luarc.json` turns off
+`lowercase-global`, which would flag every callback. Scripts that need to wrap or feed another script (a test driver
+for a game, say) `require` it and redefine or wrap the globals it defines, or set a global the other one reads.
 
 ## Enabling it
 
@@ -59,7 +65,7 @@ all of them.
 
 ## Cameras
 
-`GameScript.camera(aspect)` returns `eye`, `target`, `fov`, `near` and `far`. Add `ortho_height` for an orthographic
+`on_camera(aspect)` returns `eye`, `target`, `fov`, `near` and `far`. Add `ortho_height` for an orthographic
 view that many world units tall (the width follows the aspect ratio), and `up` for a camera that looks along the
 y axis (a top-down view needs `up = {0, 0, 1}`). The renderer's perspective-based fits, such as sun shadow cascades,
 assume a perspective camera, so use an unlit scene with an orthographic view. `assets/scripts/snake/` does.

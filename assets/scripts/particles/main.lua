@@ -1,13 +1,10 @@
 -- Particles from Lua. The engine simulates and draws them; a script only describes an emitter on an entity.
 --   lathe --game lua --script assets/scripts/particles/main.lua
 
----@type GameScript
-local M = {}
-
 local fountain, embers, orange, teal
 local clock = 0.0
 
-function M.on_populate()
+function on_populate()
     orange = assets.material("fountain_tint", 1.0, 0.55, 0.2)
     teal = assets.material("ember_tint", 0.2, 0.9, 0.8)
 
@@ -54,15 +51,13 @@ function M.on_populate()
     print("rejected as expected: " .. tostring(problem), ok)
 end
 
-function M.on_update(dt)
+function on_update(dt)
     clock = clock + dt
 
     -- Changing fields keeps the particles that are alive: entity.set_particles only touches what it is given.
     entity.set_particles(fountain, { speed = 7.5 + 2.0 * math.sin(clock) })
 end
 
-function M.camera(aspect)
+function on_camera(aspect)
     return { eye = { 0.0, 3.5, -11.0 }, target = { 1.5, 3.0, 0.0 }, fov = 55 }
 end
-
-return M

@@ -5,13 +5,17 @@
 -- The model comes from tools/blender/gi_town.py (it describes what is in the town):
 --   ~/dev/git/build_linux/bin/blender -b --python tools/blender/gi_town.py -- ~/Assets/Meshes/gi_town
 
+-- Wrapper scripts (town_shots, town_stress) define these before this one loads: `drive(dt, player)` steers the player
+-- instead of the keyboard, `pose()` places the camera ({ eye, look, fov? }) instead of the player.
+---@type (fun(dt: number, player: Entity): number, number, boolean, boolean, number)?
+drive = drive
+---@type (fun(): { eye: number[], look: number[], fov: number? })?
+pose = pose
+
 local MODEL = "/home/edwin/Assets/Meshes/gi_town.glb"
 
 local EYE_HEIGHT = 1.6
 local WALK, RUN, FLY, FLY_FAST = 3.2, 6.5, 12.0, 40.0
-
----@type GameScript
-local M = {}
 
 local town, town_model
 local player
@@ -47,7 +51,7 @@ local function find_spawn()
     end
 end
 
-function M.on_populate()
+function on_populate()
     -- Without this the default scene stays: its ground plane (with the debug grid) at y = 0 fights the terrain.
     scene.clear()
     scene.set_environment(LIGHTING[2])
@@ -57,7 +61,7 @@ function M.on_populate()
     physics.add_mesh_collider(town, town_model)
 end
 
-function M.on_update(dt)
+function on_update(dt)
     clock = clock + dt
 
     if not spawned then
@@ -78,9 +82,9 @@ function M.on_update(dt)
     end
 
     local forward, strafe, run
-    if M.drive then
+    if drive then
         -- Tests and demos drive the player through this instead of the keyboard.
-        forward, strafe, run, _, yaw = M.drive(dt, player)
+        forward, strafe, run, _, yaw = drive(dt, player)
     else
         local mx, my = mouse.delta()
         yaw = yaw + mx * 0.0025
@@ -102,7 +106,7 @@ function M.on_update(dt)
             eye[3] + (fz * forward + rz * strafe) * speed,
         }
     else
-        local jump = not M.drive and key.down(key.SPACE)
+        local jump = not drive and key.down(key.SPACE)
         local length = math.sqrt(forward * forward + strafe * strafe)
         local speed = run and RUN or WALK
         local vx, vz = 0.0, 0.0
@@ -125,7 +129,7 @@ function M.on_update(dt)
     }
 end
 
-function M.on_key(code)
+function on_key(code)
     if code == key.ESCAPE then
         game.quit()
     elseif code == key.F then
@@ -143,10 +147,10 @@ function M.on_key(code)
     end
 end
 
-function M.camera(_aspect)
-    if M.pose then
+function on_camera(_aspect)
+    if pose then
         -- Tests and demos place the camera through this instead of the player.
-        local pose = M.pose()
+        local pose = pose()
         return { eye = pose.eye, target = pose.look, fov = pose.fov or 70, near = 0.2, far = 1200 }
     end
     -- The depth buffer is not reversed: a near plane of 5 cm leaves under 10 cm of depth resolution at 80 m, which
@@ -154,8 +158,8 @@ function M.camera(_aspect)
     return { eye = eye, target = look, fov = 70, near = 0.2, far = 1200 }
 end
 
-function M.on_ui()
-    if spawned and not M.pose then
+function on_ui()
+    if spawned and not pose then
         -- What the script sees, so a window that gets no input is easy to tell from a character that cannot move.
         ui.window("##town_hud", { x = 16, y = 16, no_inputs = true, bg_alpha = 0.6 }, function()
             ui.text_disabled("WASD move, Shift run, Space jump, F fly (Q/E down/up), 1/2/3 noon/dusk/night, Esc quit")
@@ -173,5 +177,3 @@ function M.on_ui()
         end)
     end
 end
-
-return M

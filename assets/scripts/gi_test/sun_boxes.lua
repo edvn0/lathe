@@ -3,9 +3,6 @@
 --   lathe --game=lua --script=assets/scripts/gi_test/sun_boxes.lua --player
 -- Shots advance every 60 frames (see SHOT_FRAMES), so screenshots at frames 30, 90, 150 ... show shots 1, 2, 3 ...
 
----@type GameScript
-local M = {}
-
 local SHOTS = {
     { eye = { -9, 5, -9 }, look = { 0, 1, 0 }, fov = 55 },
     { eye = { 0, 14, -3 }, look = { 0, 0, 1 }, fov = 55 },
@@ -27,7 +24,7 @@ local function box(name, mesh, mat, centre, half)
     return e
 end
 
-function M.on_populate()
+function on_populate()
     scene.clear()
     scene.set_environment({ sky = "procedural", skybox = true, ambient = 0.05, exposure_ev = 0, sun_intensity = 3,
                             sun_elevation = 35 })
@@ -45,14 +42,12 @@ end
 local SHOT_FRAMES = 60
 local frames = 0
 
-function M.on_update(_)
+function on_update(_)
     frames = frames + 1
     shot = math.min(#SHOTS, math.floor(frames / SHOT_FRAMES) + 1)
 end
 
-function M.camera(_)
+function on_camera(_)
     local s = SHOTS[shot]
     return { eye = s.eye, target = s.look, fov = s.fov, near = 0.05, far = 200 }
 end
-
-return M

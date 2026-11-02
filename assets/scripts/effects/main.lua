@@ -3,13 +3,10 @@
 -- runs and the effect reloads.
 --   lathe --game lua --script assets/scripts/effects/main.lua
 
----@type GameScript
-local M = {}
-
 local tint
 local clock = 0.0
 
-function M.on_populate()
+function on_populate()
     local cube = assets.cube()
     local colours = {
         { "red", 0.9, 0.2, 0.15 }, { "green", 0.2, 0.8, 0.3 }, { "blue", 0.2, 0.35, 0.9 },
@@ -33,7 +30,7 @@ function M.on_populate()
     print(select(2, pcall(function() scene.add_effect(tint, "after_depth") end)))
 end
 
-function M.on_update(dt)
+function on_update(dt)
     clock = clock + dt
     tint:set("strength", 0.5 + 0.5 * math.sin(clock))
 
@@ -42,8 +39,6 @@ function M.on_update(dt)
     end
 end
 
-function M.camera(aspect)
+function on_camera(aspect)
     return { eye = { 0.0, 3.0, -8.0 }, target = { 0.0, 1.0, 0.0 }, fov = 55 }
 end
-
-return M

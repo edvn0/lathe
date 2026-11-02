@@ -323,10 +323,15 @@ auto LuaRuntime::run_main(std::string_view chunk_name, std::string_view source) 
         return std::unexpected{std::move(message)};
     }
 
-    if (!lua_istable(state, -1)) {
+    // A script that returns a table of callbacks gets them from it; one that returns nothing defines them as global
+    // functions (`function on_update(dt) ... end`), and the callbacks are the globals.
+    if (lua_isnil(state, -1)) {
+        lua_pop(state, 1);
+        lua_pushglobaltable(state);
+    } else if (!lua_istable(state, -1)) {
         lua_settop(state, 0);
 
-        return std::unexpected{"the entry script must return a table of callbacks"};
+        return std::unexpected{"the entry script must define global callback functions, or return a table of them"};
     }
 
     lua_setfield(state, LUA_REGISTRYINDEX, callbacks_key);
