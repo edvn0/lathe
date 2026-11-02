@@ -11,8 +11,9 @@
 // for changing it while the editor runs.
 struct GiSettings {
     bool enabled = true;
-    // Rays per probe per frame, a multiple of 64 up to 256.
-    std::uint32_t rays_per_probe = 64;
+    // Rays per probe per frame, a multiple of 64 up to 256. Fewer rays leave the probes noisy: with 64, sunlit patches
+    // flicker from frame to frame even with a still camera.
+    std::uint32_t rays_per_probe = 256;
     // Metres between the probes of the near cascade; the coarse cascade is four times that.
     float probe_spacing = 1.0F;
     // Scales the diffuse light the probes give.
