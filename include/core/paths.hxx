@@ -104,6 +104,9 @@ struct PathsOptions {
     std::optional<std::filesystem::path> project_root;
     // Where the engine's own resources are, for a project; found from the working directory and executable if unset.
     std::optional<std::filesystem::path> engine_dir;
+    // Extra content roots (--mount), searched after the data root and before the engine's, in the order given. A mounted
+    // directory is laid out like the data root (assets/scripts, assets/models, ...).
+    std::vector<std::filesystem::path> mounts;
 };
 
 class Paths {
@@ -131,12 +134,17 @@ public:
     // unless a project is open.
     [[nodiscard]] auto engine_root() const noexcept -> std::filesystem::path const & { return engine_; }
 
-    // Content: the project's file when it has one, else the engine's, else where the project's would be (so new files
+    // Every content root in search order: the data root, the mounts, then the engine root, without repeats.
+    [[nodiscard]] auto search_roots() const -> std::vector<std::filesystem::path>;
+    // The extra content roots, in search order.
+    [[nodiscard]] auto mounts() const noexcept -> std::vector<std::filesystem::path> const & { return mounts_; }
+
+    // Content: the project's file when it has one, then each mount's, then the engine's, else where the project's would be (so new files
     // are created in the project).
     [[nodiscard]] auto data(std::string_view relative) const -> std::optional<DataPath>;
     // An engine resource, which a project cannot shadow.
     [[nodiscard]] auto engine(std::string_view relative) const -> std::optional<DataPath>;
-    // Every existing directory 'relative' names, the project's first, for include paths and watchers.
+    // Every existing directory 'relative' names, the project's first, then the mounts', for include paths and watchers.
     [[nodiscard]] auto data_directories(std::string_view relative) const -> std::vector<std::filesystem::path>;
     // The path relative to a mount root it lies under (project first), if any.
     [[nodiscard]] auto relative_to_roots(std::filesystem::path const &absolute) const -> std::optional<std::filesystem::path>;
@@ -150,6 +158,7 @@ private:
 
     std::filesystem::path data_;
     std::filesystem::path engine_;
+    std::vector<std::filesystem::path> mounts_;
     std::filesystem::path cache_;
     std::filesystem::path state_;
     std::filesystem::path screenshots_;

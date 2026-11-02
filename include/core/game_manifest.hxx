@@ -4,6 +4,7 @@
 #include <expected>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 // The probe global illumination (docs/probe-gi.md): on by default wherever the device has VK_KHR_ray_query, tuned in the
 // `[gi]` table of lathe.project / game.toml, with the editor's Project Settings page and the frame graph's Probe GI stage
@@ -61,6 +62,9 @@ struct GameManifest {
     std::string entry;
     // A cooked scene (.lbf) relative to the data directory, opened before play starts; empty to use the game's own.
     std::string scene;
+    // Extra content directories (`mount = "..."`, repeatable), relative to the project root, searched after the project's
+    // own content and before the engine's. Development only: a packaged game carries its content cooked.
+    std::vector<std::string> mounts;
     GiSettings gi;
     DiagnosticsSettings diagnostics;
     RenderSettings render;

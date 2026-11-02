@@ -1106,9 +1106,23 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         }
     }
 
+    // The project's `mount` lines (relative to its root), then --mount as a development override.
+    std::vector<std::filesystem::path> mount_directories;
+
+    if (project) {
+        for (auto const &mount: project->manifest.mounts) {
+            mount_directories.push_back(project->root / mount);
+        }
+    }
+
+    for (auto const &mount: cvars::mount.get()) {
+        mount_directories.emplace_back(mount);
+    }
+
     Paths::set_current(Paths::resolve({
             .data_dir = cvars::data_dir.get().empty() ? std::nullopt : std::optional{std::filesystem::path{cvars::data_dir.get()}},
             .project_root = project ? std::optional{project->root} : std::nullopt,
+            .mounts = mount_directories,
     }));
     std::optional<GameManifest> manifest;
 
