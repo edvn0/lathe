@@ -45,6 +45,9 @@ struct LuaGameHost {
 
     std::unique_ptr<LuaAnimationSystem> animation = std::make_unique<LuaAnimationSystem>();
 
+    // The headless calls already reported (see headless_note in lua_game_api.cxx).
+    std::set<std::string, std::less<>> headless_notes;
+
     std::unordered_map<std::uint64_t, std::shared_ptr<MeshColliderSlot>> collider_slots;
     std::vector<PendingMeshCollider> mesh_colliders;
 };
