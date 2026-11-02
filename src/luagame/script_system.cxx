@@ -138,8 +138,22 @@ auto ScriptSystem::on_populate(Scene &scene, Renderer *renderer, EngineModels co
     self.watcher.stop();
     self.instances.clear();
 
-    // The scripts to run: the project's, or none (the behaviours still need a Lua state).
-    auto const &paths = self.host.scripts;
+    // The scripts to run: the project's list, else assets/scripts/main.lua when there is one (so saving a main.lua into a
+    // project is enough), else none (the behaviours still need a Lua state).
+    auto paths = self.host.scripts;
+
+    if (paths.empty()) {
+        if (auto const main_script = Paths::current().data("assets/scripts/main.lua");
+            main_script && std::filesystem::exists(main_script->absolute())) {
+            paths.emplace_back("assets/scripts/main.lua");
+        }
+    }
+
+    // A project's scripts directory has to exist for the watcher to see a script saved into it later.
+    if (!self.host.player_mode && Paths::current().in_project()) {
+        std::error_code ignored;
+        std::filesystem::create_directories(Paths::current().data_root() / "assets" / "scripts", ignored);
+    }
 
     auto const make_instance = [&](std::string const &path) -> Impl::Instance * {
         auto created = LuaRuntime::create();
