@@ -93,13 +93,13 @@ auto Runtime::game_menu_names() const -> std::vector<std::string> {
 
 auto Runtime::setup_game(std::string_view name) const -> std::optional<GameSetup> {
     auto const make_scripts = [this] {
-        auto scripts = std::make_unique<ScriptSystem>();
+        auto created = std::make_unique<ScriptSystem>();
 
         for (auto const &[module_name, opener]: native_script_modules) {
-            scripts->add_native_module(module_name, opener);
+            created->add_native_module(module_name, opener);
         }
 
-        return scripts;
+        return created;
     };
 
     if (std::ranges::find(available_games, name) != available_games.end() && game_factory) {
@@ -134,7 +134,7 @@ auto Runtime::wants_cursor() const -> bool {
     return game->wants_cursor() || (scripts && scripts->wants_cursor());
 }
 
-auto Runtime::camera(float aspect_ratio) const -> CameraParams {
+auto Runtime::game_camera(float aspect_ratio) const -> CameraParams {
     if (scripts && scripts->has_camera()) {
         return scripts->camera(*active_scene(), aspect_ratio);
     }
