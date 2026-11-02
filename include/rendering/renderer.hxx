@@ -65,6 +65,7 @@
 #include "rendering/hiz_occlusion.hxx"
 #include "rendering/probe_volume.hxx"
 #include "rendering/ray_traced_shadows.hxx"
+#include "rendering/scene_resources.hxx"
 #include "rendering/meshlet_visibility.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
 #include "rendering/render_passes.hxx"
@@ -363,7 +364,7 @@ struct RendererCreateInfo {
     VkDeviceSize skin_scratch_bytes = VkDeviceSize{32} << 20;
 };
 
-struct Renderer final : public IMeshSink, public IModelSink {
+struct Renderer final : public IMeshSink, public IModelSink, public ISceneResources {
     explicit Renderer(VulkanContext &context) noexcept;
     ~Renderer() noexcept;
 
@@ -513,9 +514,9 @@ struct Renderer final : public IMeshSink, public IModelSink {
     auto update_material(MaterialHandle handle, MaterialCreateInfo const &create_info)
             -> std::expected<void, RendererError>;
 
-    auto retain_material(MaterialHandle handle) -> void;
+    auto retain_material(MaterialHandle handle) -> void override;
 
-    auto release_material(MaterialHandle handle) -> void;
+    auto release_material(MaterialHandle handle) -> void override;
 
     [[nodiscard]]
     auto destroy_material(MaterialHandle handle) -> std::expected<void, RendererError>;
@@ -796,7 +797,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto image_storage() noexcept -> ImageStorage & override { return image_storage_; }
     [[nodiscard]] auto material_storage() noexcept -> MaterialStorage & override { return material_storage_; }
     [[nodiscard]] auto sampler_storage() noexcept -> SamplerStorage & override { return sampler_storage_; }
-    [[nodiscard]] auto script_storage() noexcept -> ScriptStorage & { return script_storage_; }
+    [[nodiscard]] auto script_storage() noexcept -> ScriptStorage & override { return script_storage_; }
     [[nodiscard]] auto script_storage() const noexcept -> ScriptStorage const & { return script_storage_; }
     [[nodiscard]] auto texture_streamer() noexcept -> TextureStreamer & override { return texture_streamer_; }
     [[nodiscard]] auto model_streamer() noexcept -> ModelStreamer & { return model_streamer_; }
@@ -934,7 +935,7 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto last_cluster_stats() const noexcept -> ClusterStats const & { return last_cluster_stats_; }
 
     auto request_screenshot(ScreenshotSource source) noexcept -> void;
-    auto mark_lights_dirty() -> void {
+    auto mark_lights_dirty() -> void override {
         lights_dirty_mask_ = frames_.empty() ? 0U : ((1U << frames_.size()) - 1U);
 
         for (auto const &view: extra_views_) {

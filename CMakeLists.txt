@@ -1149,6 +1149,31 @@ target_link_libraries(
         engine_options
 )
 
+# Runs a game script with no window, renderer or GPU (see tools/lua/main.cxx).
+add_executable(
+    lathe-lua
+    tools/lua/main.cxx
+    game/src/script_modules.cxx
+    game/src/chess_lua.cxx
+    game/src/chess_engine.cxx
+    game/src/net_lua.cxx
+)
+
+target_include_directories(
+    lathe-lua
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/game/include"
+)
+
+target_link_libraries(
+    lathe-lua
+    PRIVATE
+        engine_gameclient_ix
+        lathe::engine
+        engine_options
+)
+
 # Bakes an equirect HDR panorama into a KTX2 cubemap environment (see tools/env_bake/main.cxx).
 add_executable(
     lathe-env-bake

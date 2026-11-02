@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <expected>
@@ -116,6 +117,14 @@ namespace {
         entity->id = id;
 
         luaL_setmetatable(state, entity_meta);
+    }
+
+    // Says, once per function, that a call does nothing because the script runs with no render context (lathe-lua): the
+    // call returns a placeholder and the script goes on.
+    auto headless_note(LuaGameHost &host, char const *what) -> void {
+        if (host.headless_notes.emplace(what).second) {
+            warn("[lua] {}: no render context in this run, so it does nothing (a placeholder is returned)", what);
+        }
     }
 
     auto push_model(lua_State *state, ModelHandle handle) -> void {
@@ -1223,7 +1232,14 @@ namespace {
 
         auto const *const text = downloaded ? "" : luaL_checkstring(state, 1);
 
-        if (host.renderer == nullptr || host.engine_models == nullptr) {
+        if (host.renderer == nullptr) {
+            headless_note(host, "assets.load_model");
+            push_model(state, ModelHandle{});
+
+            return 1;
+        }
+
+        if (host.engine_models == nullptr) {
             return luaL_error(state, "assets can only be loaded from on_populate and later");
         }
 
@@ -1277,7 +1293,10 @@ namespace {
         auto &host = game_host(state);
 
         if (host.engine_models == nullptr) {
-            return luaL_error(state, "assets can only be used from on_populate and later");
+            headless_note(host, "assets.cube");
+            push_model(state, ModelHandle{});
+
+            return 1;
         }
 
         push_model(state, host.engine_models->cube);
@@ -1289,7 +1308,10 @@ namespace {
         auto &host = game_host(state);
 
         if (host.engine_models == nullptr) {
-            return luaL_error(state, "assets can only be used from on_populate and later");
+            headless_note(host, "assets.sphere");
+            push_model(state, ModelHandle{});
+
+            return 1;
         }
 
         push_model(state, host.engine_models->sphere);
@@ -1301,7 +1323,10 @@ namespace {
         auto &host = game_host(state);
 
         if (host.engine_models == nullptr) {
-            return luaL_error(state, "assets can only be used from on_populate and later");
+            headless_note(host, "assets.capsule");
+            push_model(state, ModelHandle{});
+
+            return 1;
         }
 
         push_model(state, host.engine_models->capsule);
@@ -1319,7 +1344,14 @@ namespace {
         auto const metallic = static_cast<float>(luaL_optnumber(state, 6, 0.0));
 
         if (host.renderer == nullptr) {
-            return luaL_error(state, "materials can only be created from on_populate and later");
+            headless_note(host, "assets.material");
+
+            auto *const placeholder = static_cast<LuaMaterial *>(lua_newuserdatauv(state, sizeof(LuaMaterial), 0));
+
+            placeholder->handle = MaterialHandle{};
+            luaL_setmetatable(state, material_meta);
+
+            return 1;
         }
 
         auto &images = host.renderer->image_storage();
@@ -1511,7 +1543,14 @@ namespace {
     }
 
     auto game_time(lua_State *state) -> int {
-        lua_pushnumber(state, ImGui::GetTime());
+        // ImGui's clock where the engine runs a UI; the process's own where it does not (a headless run, lathe-lua).
+        if (ImGui::GetCurrentContext() != nullptr) {
+            lua_pushnumber(state, ImGui::GetTime());
+        } else {
+            static auto const started = std::chrono::steady_clock::now();
+
+            lua_pushnumber(state, std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
+        }
 
         return 1;
     }
@@ -2199,11 +2238,10 @@ namespace {
     auto render_bloom(lua_State *state) -> int {
         auto &host = game_host(state);
 
-        if (host.renderer == nullptr) {
-            return luaL_error(state, "render settings can only be used from on_populate and later");
-        }
 
-        auto const &bloom = host.renderer->bloom_settings();
+        // Without a renderer (a headless run) the settings are the defaults.
+        auto const defaults = BloomSettings{};
+        auto const &bloom = host.renderer != nullptr ? host.renderer->bloom_settings() : defaults;
 
         lua_createtable(state, 0, 4);
         lua_pushboolean(state, bloom.enabled ? 1 : 0);
@@ -2222,11 +2260,12 @@ namespace {
     auto render_set_bloom(lua_State *state) -> int {
         auto &host = game_host(state);
 
-        if (host.renderer == nullptr) {
-            return luaL_error(state, "render settings can only be used from on_populate and later");
-        }
-
         luaL_checktype(state, 1, LUA_TTABLE);
+
+        // With no renderer (a headless run) there is nothing to set.
+        if (host.renderer == nullptr) {
+            return 0;
+        }
 
         auto bloom = host.renderer->bloom_settings();
 
@@ -2244,8 +2283,15 @@ namespace {
     auto render_grade(lua_State *state) -> int {
         auto &host = game_host(state);
 
+        // With no renderer (a headless run): no LUT, full intensity and none to choose from.
         if (host.renderer == nullptr) {
-            return luaL_error(state, "render settings can only be used from on_populate and later");
+            lua_createtable(state, 0, 3);
+            lua_pushnumber(state, ColourGradeSettings{}.intensity);
+            lua_setfield(state, -2, "intensity");
+            lua_createtable(state, 0, 0);
+            lua_setfield(state, -2, "luts");
+
+            return 1;
         }
 
         auto const &renderer = *host.renderer;
@@ -2277,11 +2323,12 @@ namespace {
     auto render_set_grade(lua_State *state) -> int {
         auto &host = game_host(state);
 
-        if (host.renderer == nullptr) {
-            return luaL_error(state, "render settings can only be used from on_populate and later");
-        }
-
         luaL_checktype(state, 1, LUA_TTABLE);
+
+        // With no renderer (a headless run) there is nothing to set.
+        if (host.renderer == nullptr) {
+            return 0;
+        }
 
         auto &renderer = *host.renderer;
         auto grade = renderer.colour_grade_settings();

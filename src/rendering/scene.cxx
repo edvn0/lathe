@@ -5,6 +5,7 @@
 #include "rendering/debug_renderer.hxx"
 #include "rendering/entity.hxx"
 #include "rendering/renderer.hxx"
+#include "rendering/scene_resources.hxx"
 #include "rendering/script_storage.hxx"
 #include "scene/components.hxx"
 
@@ -47,12 +48,12 @@ namespace {
     }
 }
 
-Scene::Scene(Renderer &renderer) :
-    hierarchy_revision_(next_hierarchy_revision()), static_revision_(next_hierarchy_revision()), renderer_(renderer) {
+Scene::Scene(ISceneResources &resources) :
+    hierarchy_revision_(next_hierarchy_revision()), static_revision_(next_hierarchy_revision()), resources_(resources) {
     connect_light_signals();
     connect_static_signals();
     connect_hierarchy_signals();
-    entt::sink{lights_changed_signal_}.connect<&Renderer::mark_lights_dirty>(renderer);
+    entt::sink{lights_changed_signal_}.connect<&ISceneResources::mark_lights_dirty>(resources);
 }
 
 Scene::~Scene() {
@@ -74,9 +75,9 @@ auto Scene::step(float delta_time) -> void {
     physics_world->step(get_registry(), std::min(delta_time, 0.25F));
 }
 
-auto Scene::get_scripts() noexcept -> ScriptStorage & { return renderer_.script_storage(); }
+auto Scene::get_scripts() noexcept -> ScriptStorage & { return resources_.script_storage(); }
 
-auto Scene::get_scripts() const noexcept -> ScriptStorage const & { return renderer_.script_storage(); }
+auto Scene::get_scripts() const noexcept -> ScriptStorage const & { return resources_.script_storage(); }
 
 auto Scene::mark_lights_dirty(entt::registry &, entt::entity) -> void { lights_changed_signal_.publish(); }
 
@@ -165,37 +166,37 @@ auto Scene::on_rigid_body_destroyed(entt::registry &reg, entt::entity entity) ->
 
 auto Scene::on_script_attached(entt::registry &reg, entt::entity entity) -> void {
     auto const handle = reg.get<Components::Script>(entity).script;
-    if (auto *script = renderer_.script_storage().get(handle)) {
+    if (auto *script = resources_.script_storage().get(handle)) {
         script->on_attach(AttachedEntity{this, entity});
     }
 }
 
 auto Scene::on_script_detached(entt::registry &reg, entt::entity entity) -> void {
     auto const handle = reg.get<Components::Script>(entity).script;
-    if (auto *script = renderer_.script_storage().get(handle)) {
+    if (auto *script = resources_.script_storage().get(handle)) {
         script->on_detach(AttachedEntity{this, entity});
     }
 }
 
 auto Scene::on_material_override_attached(entt::registry &reg, entt::entity entity) -> void {
     for_each_material(reg.get<Components::MaterialOverride>(entity),
-                      [this](MaterialHandle handle) { renderer_.retain_material(handle); });
+                      [this](MaterialHandle handle) { resources_.retain_material(handle); });
 }
 
 auto Scene::on_material_override_detached(entt::registry &reg, entt::entity entity) -> void {
     for_each_material(reg.get<Components::MaterialOverride>(entity),
-                      [this](MaterialHandle handle) { renderer_.release_material(handle); });
+                      [this](MaterialHandle handle) { resources_.release_material(handle); });
 }
 
 auto Scene::on_model_destroyed(entt::registry &reg, entt::entity entity) -> void {
     if (auto const model = Components::model_released_by_model_destroy(reg, entity)) {
-        renderer_.release_model(*model);
+        resources_.release_model(*model);
     }
 }
 
 auto Scene::on_streamed_model_tag_destroyed(entt::registry &reg, entt::entity entity) -> void {
     if (auto const model = Components::model_released_by_tag_destroy(reg, entity)) {
-        renderer_.release_model(*model);
+        resources_.release_model(*model);
     }
 }
 
@@ -204,7 +205,7 @@ auto Scene::set_material_override(entt::entity entity, Components::MaterialOverr
         return;
     }
 
-    for_each_material(material_override, [this](MaterialHandle handle) { renderer_.retain_material(handle); });
+    for_each_material(material_override, [this](MaterialHandle handle) { resources_.retain_material(handle); });
 
     registry.remove<Components::MaterialOverride>(entity);
     if (material_override.empty()) {
@@ -212,7 +213,7 @@ auto Scene::set_material_override(entt::entity entity, Components::MaterialOverr
     }
 
     auto const &stored = registry.emplace<Components::MaterialOverride>(entity, std::move(material_override));
-    for_each_material(stored, [this](MaterialHandle handle) { renderer_.release_material(handle); });
+    for_each_material(stored, [this](MaterialHandle handle) { resources_.release_material(handle); });
 }
 
 auto Scene::attach_debug_renderer(debug_draw::DebugRenderer &renderer) -> void {
@@ -387,3 +388,16 @@ auto systems::WorldTransformCache::ancestors_of(entt::registry const &registry, 
     stored.state = State::known;
     return matrix;
 }
+
+HeadlessSceneResources::HeadlessSceneResources() {
+    // The Renderer's storage is sized by its create info; a headless scene has no such limit to honour.
+    auto created = ScriptStorage::create(ScriptStorageCreateInfo{.capacity = 1U << 16U});
+
+    if (created) {
+        scripts_ = std::make_unique<ScriptStorage>(std::move(*created));
+    }
+}
+
+HeadlessSceneResources::~HeadlessSceneResources() = default;
+
+auto HeadlessSceneResources::script_storage() noexcept -> ScriptStorage & { return *scripts_; }

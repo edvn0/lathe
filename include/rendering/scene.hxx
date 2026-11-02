@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+class ISceneResources;
 class PhysicsWorld;
 class ScriptStorage;
 
@@ -33,7 +34,7 @@ public:
 
     SceneEnvironment environment = new_scene_environment();
 
-    explicit Scene(Renderer &);
+    explicit Scene(ISceneResources &);
     ~Scene();
 
     auto on_scene_start() -> void;
@@ -70,7 +71,7 @@ public:
     std::unique_ptr<PhysicsWorld> physics_world;
 
 private:
-    Renderer &renderer_;
+    ISceneResources &resources_;
 
     auto mark_lights_dirty(entt::registry &, entt::entity) -> void;
     auto on_transform_changed(entt::registry &reg, entt::entity entity) -> void;

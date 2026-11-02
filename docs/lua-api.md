@@ -22,6 +22,17 @@ callbacks instead (`---@type GameScript` on it) still works. State is kept in `l
 `lowercase-global`, which would flag every callback. Scripts that need to wrap or feed another script (a test driver
 for a game, say) `require` it and redefine or wrap the globals it defines, or set a global the other one reads.
 
+## Running a script without the engine
+
+`lathe-lua <SCRIPT> [--frames=N] [--dt=SECONDS] [--data-dir=DIR] [--mount=DIR,DIR] [--no-physics]` runs a game script on a
+scene with no window, renderer or GPU: the engine's `ScriptSystem` over a `Scene` that has `HeadlessSceneResources` instead of
+a `Renderer`. It calls `on_populate`, then `on_update(dt)` for each frame (stepping physics), stops early on `game.quit()`,
+and exits 1 with the Lua error if a callback raises one, 2 on a bad command line. The script comes first on the command line.
+`lathe-lua` says at start-up that it is not a render context. The calls that need one (`assets.load_model`,
+`assets.material`, `assets.cube`, `render.set_*`) do nothing and return placeholders, each reported once in the log, so a
+real game script still runs; `scene`, `entity`, `physics` and the rest work, so scripts and their logic can be tested without the engine (`test/headless_scripts_test.cxx`
+does the same in-process).
+
 ## Enabling it
 
 - **VS Code:** install the "Lua" extension (sumneko.lua) and open the repo root. `.luarc.json` is picked up.
