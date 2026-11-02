@@ -45,6 +45,38 @@ namespace {
         return std::move(contents).str();
     }
 
+    // A .luarc.json in the project root, so a Lua language server (lua_ls) opened on a script finds the engine's API
+    // stubs (lua-api/) and the callbacks and libraries a script gets. It is the server's root marker; an existing file is
+    // left alone.
+    auto write_editor_config(std::filesystem::path const &project_root, std::filesystem::path const &engine_root) -> void {
+        auto const config = project_root / ".luarc.json";
+        auto const stubs = engine_root / "lua-api";
+        std::error_code ignored;
+
+        if (std::filesystem::exists(config, ignored) || !std::filesystem::is_directory(stubs, ignored)) {
+            return;
+        }
+
+        std::ofstream file{config};
+
+        if (!file) {
+            return;
+        }
+
+        file << "{\n"
+                "  \"$schema\": \"https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json\",\n"
+                "  \"runtime\": { \"version\": \"Lua 5.4\" },\n"
+                "  \"workspace\": { \"library\": [\""
+             << stubs.generic_string()
+             << "\"], \"checkThirdParty\": false },\n"
+                "  \"diagnostics\": {\n"
+                "    \"globals\": [\"scene\", \"assets\", \"camera\", \"ui\", \"game\", \"entity\", \"compute\", \"key\", "
+                "\"mouse\", \"physics\", \"animation\", \"render\", \"http\", \"text\"],\n"
+                "    \"disable\": [\"lowercase-global\"]\n"
+                "  }\n"
+                "}\n";
+    }
+
     constexpr float default_fov_degrees = 60.0F;
     constexpr float default_near_clip = 0.1F;
     constexpr float default_far_clip = 1000.0F;
@@ -153,6 +185,8 @@ auto ScriptSystem::on_populate(Scene &scene, Renderer *renderer, EngineModels co
     if (!self.host.player_mode && Paths::current().in_project()) {
         std::error_code ignored;
         std::filesystem::create_directories(Paths::current().data_root() / "assets" / "scripts", ignored);
+
+        write_editor_config(Paths::current().data_root(), Paths::current().engine_root());
     }
 
     auto const make_instance = [&](std::string const &path) -> Impl::Instance * {
