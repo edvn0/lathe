@@ -95,7 +95,8 @@ struct Runtime {
     auto reload_behaviours() -> void;
 
     std::string game_name;
-    std::string script_entry;
+    // The project's scripts (see GameManifest::scripts); empty without a project.
+    std::vector<std::string> script_paths;
 
     auto play() -> void;
     auto stop() -> void;
@@ -126,17 +127,18 @@ struct Runtime {
     // The native Lua modules every script can require (the executable's, see native_script_modules()).
     std::vector<std::pair<std::string, lua_CFunction>> native_script_modules;
 
-    // What a game name stands for: a native game ("lua" among them, which runs the configured entry script), or a scripted
-    // game, any assets/scripts/<name>/main.lua found in the data roots (an EmptyGame with that script on top).
+    // The native game of that name with the scripting component, made as the game starts.
     struct GameSetup {
         std::unique_ptr<IGame> game;
         std::unique_ptr<ScriptSystem> scripts;
-        // The entry script the scripts run, empty for the configured one.
-        std::string script_entry;
     };
     [[nodiscard]] auto setup_game(std::string_view name) const -> std::optional<GameSetup>;
-    // The names of the games the Game menu offers: the native ones, then the scripted ones.
-    [[nodiscard]] auto game_menu_names() const -> std::vector<std::string>;
+
+    // Rebuilds the source scene from the game and the scripts (stopping play first): Ctrl+R, and what happens when a
+    // script changes on disk. Runs on the render thread.
+    auto repopulate() -> void;
+    // The project's scripts changed: runs the new list.
+    auto apply_scripts(std::vector<std::string> paths) -> void;
     std::span<std::string_view const> available_games;
     auto create_terrain() -> void;
 

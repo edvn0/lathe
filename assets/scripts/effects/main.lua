@@ -1,7 +1,7 @@
 -- A post effect from Lua. The script names a shader's manifest, gives values for its params and chooses where in the
 -- frame it runs; the engine builds and checks the passes. Edit assets/shaders/effects/tint.slang or tint.json while it
 -- runs and the effect reloads.
---   lathe --game lua --script assets/scripts/effects/main.lua
+--   lathe --project samples/effects
 
 local tint
 local clock = 0.0

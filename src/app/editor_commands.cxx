@@ -42,18 +42,7 @@ auto Application::register_editor_commands() -> void {
 
     commands.add({.id = "scene.repopulate", .label = "Repopulate Scene",
                   .shortcut = {GLFW_KEY_R, GLFW_MOD_CONTROL}, .enabled = [this] { return !scene_load_job.has_value(); },
-                  .action = [this] {
-                      renderer->queue_render_thread_event([this] {
-                          if (is_playing) {
-                              stop();
-                          }
-
-                          populate_game();
-                          scene_path.clear();
-                          scene_pack.reset();
-                          mark_source_scene_clean();
-                      });
-                  }});
+                  .action = [this] { repopulate(); }});
 
     commands.add({.id = "gizmo.translate", .label = "Translate", .shortcut = {GLFW_KEY_1, 0},
                   .context = CommandContext::viewport, .action = [this] { gizmo_operation = ImGuizmo::TRANSLATE; }});

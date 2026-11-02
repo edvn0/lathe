@@ -1,5 +1,5 @@
 -- Walk around the Amazon Lumberyard Bistro (exterior) as an animated character, with people wandering about.
---   lathe --game lua --script assets/scripts/bistro/main.lua --player
+--   lathe --project samples/bistro --player
 -- WASD walk, Shift run, Space jump, mouse look, V first/third person, Esc quit.
 --
 -- The scene is NVIDIA's ORCA "Bistro" (CC BY 4.0, https://developer.nvidia.com/orca/amazon-lumberyard-bistro). It is

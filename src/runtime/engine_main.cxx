@@ -1010,9 +1010,7 @@ namespace {
             names += names.empty() ? "" : ", ";
             names += name;
         }
-        return std::format("Which game to run: {}, or a script game, the <name> of any assets/scripts/<name>/main.lua "
-                           "(default {})",
-                           names, game_names().front());
+        return std::format("Which game to run: {} (default {})", names, game_names().front());
     }
 
     CVar<std::string> game_cvar{{
@@ -1021,14 +1019,19 @@ namespace {
             .help = "",
             .help_fn = game_help,
             .hint = "NAME",
-            // Script games are found under the data roots, which are not known yet while the arguments are read: an
-            // unknown name is reported at start-up (setup_game).
             .validator = [](std::string_view text) -> std::expected<void, std::string> {
-                if (text.empty() || text.find_first_of("/\\") != std::string_view::npos) {
-                    return std::unexpected(std::format("'{}' (a game name, not a path)", text));
+                auto const names = game_names();
+
+                if (std::ranges::find(names, text) != names.end()) {
+                    return {};
                 }
 
-                return {};
+                std::string expected;
+                for (auto const name: names) {
+                    expected += expected.empty() ? "" : "|";
+                    expected += name;
+                }
+                return std::unexpected(std::format("'{}' (expected {})", text, expected));
             },
     }};
 
@@ -1358,7 +1361,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     runtime.game_name = !game_cvar.get().empty() ? game_cvar.get()
                             : launch && !launch->game.empty() ? launch->game
                                                  : std::string{game_names().front()};
-    runtime.script_entry = !cvars::script.get().empty() ? cvars::script.get() : launch ? launch->entry : std::string{};
+    runtime.script_paths = project ? project->manifest.scripts : launch ? launch->scripts : std::vector<std::string>{};
     runtime.game_factory = [](std::string_view name) { return create_game(name); };
     runtime.available_games = game_names();
     runtime.native_script_modules = native_script_modules();
@@ -1366,8 +1369,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     auto first = runtime.setup_game(runtime.game_name);
 
     if (!first) {
-        error("Unknown game '{}': not a native game and no assets/scripts/{}/main.lua; starting '{}'.",
-              runtime.game_name, runtime.game_name, game_names().front());
+        error("Unknown game '{}'; starting '{}'.", runtime.game_name, game_names().front());
         first = runtime.setup_game(game_names().front());
     }
 
@@ -1378,7 +1380,7 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     auto const host = GameHost{
             .player_mode = player_mode,
             .request_exit = [window = context.window] { glfwSetWindowShouldClose(window, GLFW_TRUE); },
-            .script_entry = first->script_entry,
+            .scripts = runtime.script_paths,
             .effects = &runtime.effect_system,
             .text = runtime.text_renderer.get(),
     };

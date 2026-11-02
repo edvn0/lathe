@@ -1,6 +1,6 @@
 -- A neon sign: text in the world, emissive so that bloom makes it glow, with a particle emitter on the same entity that
 -- sheds sparks from the outline of the letters. Run it with:
---   lathe --game=lua --script=assets/scripts/neon_sign/main.lua --player
+--   lathe --project samples/neon_sign --player
 
 local time = 0
 local sign, open_sign

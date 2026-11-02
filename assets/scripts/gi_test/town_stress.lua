@@ -1,7 +1,7 @@
 -- Worst case for the probe volume, in the town: a camera that flies fast along the streets (the window scrolls more than
 -- a probe a frame, so probes are reassigned and relit constantly), jumps 150 m every 150 frames (the whole volume is
 -- reset), and a sun that sweeps from dusk to noon and back every 400 frames (every probe's light changes at once).
---   lathe --game=lua --script=assets/scripts/gi_test/town_stress.lua --player --screen-type=headless \
+--   lathe --project samples/gi_town_stress --player --screen-type=headless \
 --         --bench-warmup 300 --bench-frames 900
 -- The walker defines the callbacks; this script wraps its on_update and gives it a `pose` (it looks that up when it runs).
 require("gi_test.town_walk")

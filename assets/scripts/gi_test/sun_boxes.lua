@@ -1,6 +1,6 @@
 -- Sun-lit boxes on a floor: a small scene for the ray traced sun shadows (a project with [render] ray_traced_shadows =
 -- false shows the cascaded shadow map for comparison).
---   lathe --game=lua --script=assets/scripts/gi_test/sun_boxes.lua --player
+--   lathe --project samples/gi_sun_boxes --player
 -- Shots advance every 60 frames (see SHOT_FRAMES), so screenshots at frames 30, 90, 150 ... show shots 1, 2, 3 ...
 
 local SHOTS = {

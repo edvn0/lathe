@@ -21,7 +21,7 @@
 #include "shadow_caster_game.hxx"
 
 namespace {
-    constexpr std::array<std::string_view, 14> names{"empty", "basic", "punt", "chess", "lua", "moving", "meshlets", "gallery", "materials", "shadows", "shadowcity", "glass", "water", "globe"};
+    constexpr std::array<std::string_view, 13> names{"empty", "basic", "punt", "chess", "moving", "meshlets", "gallery", "materials", "shadows", "shadowcity", "glass", "water", "globe"};
 }
 
 auto game_names() -> std::span<std::string_view const> { return names; }
@@ -82,22 +82,10 @@ auto create_game(std::string_view name) -> std::unique_ptr<IGame> {
         return std::make_unique<MovingGame>();
     }
 
-    if (name == "lua") {
-        info("Starting a Lua game");
-        return std::make_unique<EmptyGame>();
-    }
-
     if (name == "chess") {
         info("Starting the 'chess' game");
         return std::make_unique<ChessGame>();
     }
 
     return std::make_unique<BasicGame>();
-}
-
-auto native_script_modules() -> std::vector<std::pair<std::string, lua_CFunction>> {
-    return {
-            {"native.chess", &luaopen_lathe_chess},
-            {"native.net", &luaopen_lathe_net},
-    };
 }

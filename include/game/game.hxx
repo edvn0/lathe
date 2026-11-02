@@ -47,7 +47,8 @@ struct GameHost {
 
     std::function<void()> request_exit;
 
-    std::string script_entry;
+    // The project's scripts, as data paths (assets/scripts/x.lua), each run with its own Lua state; empty for none.
+    std::vector<std::string> scripts;
 
     // What scripts attach compute effects through (rendering/effect_system.hxx); null where there are none.
     EffectSystem *effects = nullptr;

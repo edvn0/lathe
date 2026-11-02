@@ -77,7 +77,6 @@ namespace cvars {
     extern CVar<std::string> frame_graph_dot;
 
     // Game and scene.
-    extern CVar<std::string> script;
     extern CVar<bool> player;
     extern CVar<std::filesystem::path> scene;
     extern CVar<std::filesystem::path> save_scene;

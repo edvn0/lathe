@@ -1,0 +1,5 @@
+name = "bistro_http_textured"
+title = "bistro_http_textured"
+# The repo root holds assets/scripts, so the sample runs the script in place.
+mount = "../.."
+script = "assets/scripts/bistro_http/textured.lua"

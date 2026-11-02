@@ -1282,9 +1282,11 @@ endif()
 # Assets
 # ------------------------------------------------------------------------------
 
+# lua-api holds the LuaLS stubs; a project's generated .luarc.json points at the copy beside the executable.
 set(
     project_asset_directories
     assets
+    lua-api
 )
 
 # A target of its own rather than a POST_BUILD step on lathe, so editing a script or a shader reaches the build

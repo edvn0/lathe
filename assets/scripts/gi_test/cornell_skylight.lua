@@ -1,6 +1,6 @@
 -- "Cornell" room with a skylight for probe GI checks (phase 3: sun and sky only, so the light comes in through an opening):
 -- colour bleeding from the red wall and the lit floor, and leaks into the closed back third behind the divider.
---   lathe --game=lua --script=assets/scripts/gi_test/cornell_skylight.lua --player
+--   lathe --project samples/gi_cornell_skylight --player
 -- Shots advance every 60 frames (see SHOT_FRAMES), so screenshots at frames 30, 90, 150 ... show shots 1, 2, 3 ...
 -- Red left wall, green right wall, white elsewhere, a ceiling that is open over the left front half, and a thin divider
 -- wall that splits the back third off: irradiance behind it must stay ~0 for the leak test.

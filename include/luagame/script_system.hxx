@@ -67,10 +67,9 @@ public:
 
     auto add_native_module(std::string name, lua_CFunction opener) -> void;
 
-    // The entry script used when the host names none (--script or the game manifest).
-    auto set_default_entry(std::string entry) -> void;
-
     auto attach_host(GameHost host) -> void;
+    // The scripts the next on_populate runs (data paths); the project's list changed.
+    auto set_scripts(std::vector<std::string> scripts) -> void;
 
     // Loads the entry script into a fresh Lua state and calls its on_populate. `renderer` and `engine_models` may be
     // null.
@@ -95,6 +94,10 @@ public:
     auto on_cursor_position(Scene &scene, CursorPositionEvent const &event) -> void;
 
     auto on_ui(Scene &scene, Renderer &renderer) -> void;
+
+    // True when a script (or a module it requires) changed on disk since the last call: the caller repopulates, which
+    // reloads them. Watches the scripts' directories from on_populate until the next one.
+    [[nodiscard]] auto poll_changes() -> bool;
 
     // True once a script is loaded that defines an on_camera (or the older `camera`) callback.
     [[nodiscard]] auto has_camera() const -> bool;

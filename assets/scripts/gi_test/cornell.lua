@@ -1,5 +1,5 @@
 -- Closed "Cornell" room for probe GI checks: light leaks, colour bleeding and convergence.
---   lathe --game=lua --script=assets/scripts/gi_test/cornell.lua --player
+--   lathe --project samples/gi_cornell --player
 -- Shots advance every 60 frames (see SHOT_FRAMES), so screenshots at frames 30, 90, 150 ... show shots 1, 2, 3 ...
 -- Red left wall, green right wall, white elsewhere, an emissive ceiling quad, no sun, and a thin divider wall that
 -- splits the back third off: irradiance behind it must stay ~0 for the leak test.

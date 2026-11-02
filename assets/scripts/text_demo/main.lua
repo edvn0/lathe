@@ -1,5 +1,5 @@
 -- Text drawn on the GPU: screen-space lines over the scene, and text placed in the world. Both come from one atlas of
--- distance fields, so any size is sharp. Run it with:  lathe --game=lua --script=assets/scripts/text_demo/main.lua --player
+-- distance fields, so any size is sharp. Run it with:  lathe --project samples/text_demo --player
 
 local time = 0
 

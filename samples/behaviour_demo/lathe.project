@@ -1,0 +1,5 @@
+name = "behaviour_demo"
+title = "behaviour_demo"
+# The repo root holds assets/scripts, so the sample runs the script in place.
+mount = "../.."
+script = "assets/scripts/behaviour_demo/main.lua"

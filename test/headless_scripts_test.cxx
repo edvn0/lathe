@@ -1,8 +1,10 @@
 #include <doctest/doctest.h>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 
 #include "core/paths.hxx"
 #include "luagame/script_system.hxx"
@@ -48,7 +50,7 @@ TEST_CASE("a script runs against a scene with no renderer") {
     auto quit = false;
     ScriptSystem scripts;
 
-    scripts.attach_host(GameHost{.request_exit = [&quit] { quit = true; }});
+    scripts.attach_host(GameHost{.request_exit = [&quit] { quit = true; }, .scripts = {"assets/scripts/main.lua"}});
     scripts.on_populate(scene, nullptr, nullptr);
 
     REQUIRE(scripts.ok());
@@ -74,7 +76,7 @@ TEST_CASE("a script error is reported and stops the run") {
 
     ScriptSystem scripts;
 
-    scripts.attach_host(GameHost{});
+    scripts.attach_host(GameHost{.scripts = {"assets/scripts/main.lua"}});
     scripts.on_populate(scene, nullptr, nullptr);
     scripts.on_update(scene, 0.016F);
 
@@ -93,9 +95,64 @@ TEST_CASE("a missing entry script is an error, not a crash") {
 
     ScriptSystem scripts;
 
-    scripts.attach_host(GameHost{});
+    scripts.attach_host(GameHost{.scripts = {"assets/scripts/main.lua"}});
     scripts.on_populate(scene, nullptr, nullptr);
 
     CHECK_FALSE(scripts.ok());
     CHECK(scripts.error_text().find("not found") != std::string::npos);
+}
+
+TEST_CASE("several scripts run side by side, each with its own globals") {
+    ScriptDirectory const directory{"lathe_headless_two", ""};
+
+    std::ofstream{directory.root / "assets" / "scripts" / "a.lua"} << R"(
+        count = 0
+        function on_update(dt) count = count + 1; scene.find("a_" .. count) end
+        function on_populate() scene.spawn("from_a") end
+    )";
+    std::ofstream{directory.root / "assets" / "scripts" / "b.lua"} << R"(
+        count = 100
+        function on_update(dt) count = count + 1 end
+        function on_populate() scene.spawn("from_b") assert(count == 100, "b saw a's globals") end
+    )";
+
+    HeadlessSceneResources resources;
+    Scene scene{resources};
+    scene.on_scene_start();
+
+    ScriptSystem scripts;
+
+    scripts.attach_host(GameHost{.scripts = {"assets/scripts/a.lua", "assets/scripts/b.lua"}});
+    scripts.on_populate(scene, nullptr, nullptr);
+    scripts.on_update(scene, 0.016F);
+
+    CHECK(scripts.ok());
+    CHECK((scene.find_entity("from_a") != entt::null));
+    CHECK((scene.find_entity("from_b") != entt::null));
+}
+
+TEST_CASE("a script saved on disk is noticed") {
+    ScriptDirectory const directory{"lathe_headless_watch", "function on_update(dt) end"};
+
+    HeadlessSceneResources resources;
+    Scene scene{resources};
+    scene.on_scene_start();
+
+    ScriptSystem scripts;
+
+    scripts.attach_host(GameHost{.scripts = {"assets/scripts/main.lua"}});
+    scripts.on_populate(scene, nullptr, nullptr);
+
+    CHECK_FALSE(scripts.poll_changes());
+
+    std::ofstream{directory.root / "assets" / "scripts" / "main.lua"} << "function on_update(dt) end -- edited";
+
+    auto noticed = false;
+
+    for (auto attempt = 0; attempt < 40 && !noticed; ++attempt) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+        noticed = scripts.poll_changes();
+    }
+
+    CHECK(noticed);
 }

@@ -82,7 +82,7 @@ auto main(int argc, char **argv) -> int {
     scripts.attach_host(GameHost{
             .player_mode = true,
             .request_exit = [&quit] { quit = true; },
-            .script_entry = script,
+            .scripts = {script},
     });
     scripts.on_populate(scene, nullptr, nullptr);
 

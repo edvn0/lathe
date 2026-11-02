@@ -32,7 +32,7 @@ inside a ring of hills, hollow houses with skylights and coloured rooms, lit tow
 a raised plaza with stairs, emissive pillars and market stalls, a climbable watchtower, parked cars, street lamps and
 strings of bulbs; 1174 small emitters) with
 `~/dev/git/build_linux/bin/blender -b --python tools/blender/gi_town.py -- ~/Assets/Meshes/gi_town` (writes the `.blend` and
-the `.glb`, about 35 MB). `lathe --game=lua --script=assets/scripts/gi_test/town_walk.lua --player` walks it: WASD,
+the `.glb`, about 35 MB). `lathe --project samples/gi_town_walk --player` walks it: WASD,
 Shift, Space, mouse, F free flight (Q/E down/up), 1 noon, 2 dusk, 3 night. Lathe's world is the model with Blender's Y
 and Z swapped (Blender (x, y, z) is (x, z, y) here, not the usual glTF -Z); keep that in mind for spawn points.
 
@@ -338,7 +338,7 @@ by the time the probes arrive.
   reach Lua `on_key`): `cornell.lua` (closed room, red and green walls, emissive ceiling quad, thin divider),
   `sun_boxes.lua` (sun lit boxes and a sphere on a floor, for shadow comparisons), `bistro_shots.lua` (the Bistro, 200
   frames per shot; edit `MODEL`). Recipe: `.claude/skills/drive-engine/shoot.sh -b release -g lua -k 190:301,390:301 -n
-  420 -- --script=assets/scripts/gi_test/bistro_shots.lua --rt-poc --rt-poc-view=shadow-mask`.
+  420 -- --project=samples/gi_bistro_shots --rt-poc --rt-poc-view=shadow-mask`.
 - Baseline in `docs/perf/results.md` ("Probe GI, phase 0/1").
 - Fixed on the way: `--inject-keys` split a temporary string, which ASan (Debug) rejected as stack-use-after-scope.
 

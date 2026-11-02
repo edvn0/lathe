@@ -1,5 +1,5 @@
 -- Behaviour demo: cubes driven by assets/scripts/behaviours/spinner.lua and probe.lua.
---   lathe --game lua --script assets/scripts/behaviour_demo/main.lua
+--   lathe --project samples/behaviour_demo
 
 function on_populate()
     local cube = assets.cube()

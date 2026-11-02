@@ -5,7 +5,7 @@
 -- the glTF finds its buffers next to it. That copy renders white: its albedo lives in the deprecated
 -- KHR_materials_pbrSpecularGlossiness extension (the glTF parser is built without it) and its PNG textures are not in
 -- the repo, so it only stresses geometry, culling and lights.
--- Started with --game=lua --script=assets/scripts/bistro_http/main.lua (download) or .../textured.lua (local copy), with
+-- Started with lathe --project samples/bistro_http (download) or samples/bistro_http_textured (local copy), with
 -- --player; add --max-quality to turn every feature up. The walkable version of this scene is assets/scripts/bistro/main.lua.
 -- Keys: 1-3 camera shot (orbit, walk through, overview), Esc quits.
 
