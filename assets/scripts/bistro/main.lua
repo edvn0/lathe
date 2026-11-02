@@ -13,9 +13,6 @@ local DEBUG = false
 local EYE_HEIGHT = 1.6
 local WALK, RUN = 3.2, 6.5
 
----@type GameScript
-local M = {}
-
 local city, city_model
 local player, player_actor, rig
 local third_person = true
@@ -97,7 +94,7 @@ local function update_npc(npc, dt, player_x, player_z)
     npc.actor:move(math.sqrt(vx * vx + vz * vz), npc.character:grounded(), vy)
 end
 
-function M.on_populate()
+function on_populate()
     city = scene.spawn("bistro")
     city_model = assets.load_model(MODEL, { collider = true, min_extent = 0.35, double_sided = true })
     city:set_model(city_model)
@@ -106,7 +103,11 @@ function M.on_populate()
     rig = animation.rig(assets.load_model(PERSON), { height = 1.75 })
 end
 
-function M.on_update(dt)
+-- A wrapper script (bistro/soak.lua) defines `drive(dt, player)` before this one loads to steer the player instead of the keyboard.
+---@type (fun(dt: number, player: Entity): number, number, boolean, boolean, number)?
+drive = drive
+
+function on_update(dt)
     clock = clock + dt
 
     if not spawned then
@@ -125,9 +126,9 @@ function M.on_update(dt)
     end
 
     local forward, strafe, run, jump
-    if M.drive then
+    if drive then
         -- Tests and demos drive the player through this instead of the keyboard.
-        forward, strafe, run, jump, yaw = M.drive(dt, player)
+        forward, strafe, run, jump, yaw = drive(dt, player)
     else
         local mx, my = mouse.delta()
         yaw = yaw + mx * 0.0025
@@ -194,7 +195,7 @@ function M.on_update(dt)
     end
 end
 
-function M.on_key(code)
+function on_key(code)
     if code == key.ESCAPE then
         game.quit()
     elseif code == key.V then
@@ -202,11 +203,11 @@ function M.on_key(code)
     end
 end
 
-function M.camera(aspect)
+function on_camera(aspect)
     return { eye = eye, target = look, fov = 70, near = 0.05, far = 1500 }
 end
 
-function M.on_ui()
+function on_ui()
     if not spawned then
         ui.window("loading", { centred = true }, function()
             ui.text("Loading the Bistro" .. string.rep(".", math.floor(clock * 2) % 4), 1.5)
@@ -214,7 +215,3 @@ function M.on_ui()
         end)
     end
 end
-
-M.state = function() return player, spawned end
-
-return M

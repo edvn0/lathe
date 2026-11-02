@@ -1,7 +1,8 @@
 -- Collision soak test for the Bistro: walks, runs and jumps the player in random directions for a while and reports
 -- tunnelling (a step whose path a ray shows to cross geometry), falls out of the world and time spent stuck.
 --   lathe --game lua --script assets/scripts/bistro/soak.lua --player
-local M = require("bistro.main")
+-- bistro.main looks `drive` up as a global each frame, so this script defines it after loading the game.
+require("bistro.main")
 
 local DURATION = 240.0
 local HOP_EVERY = 20.0
@@ -32,7 +33,7 @@ local function crossed(x0, y0, z0, x1, y1, z1)
     return false
 end
 
-function M.drive(dt, player)
+function drive(dt, player)
     clock = clock + dt
     turn_timer = turn_timer - dt
     jump_timer = jump_timer - dt
@@ -97,5 +98,3 @@ function M.drive(dt, player)
 
     return 1, 0, run, jump, heading
 end
-
-return M

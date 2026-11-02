@@ -2,9 +2,6 @@
 -- roughness and metal. Started with --game=lights.
 -- Keys: 1-3 camera shot, B bloom, -/= bloom intensity, T/G bloom threshold.
 
----@type GameScript
-local M = {}
-
 local TAU = 2 * math.pi
 local SHOTS = 3
 
@@ -62,7 +59,7 @@ local function spot(name, from, to, light)
     return e
 end
 
-function M.on_populate()
+function on_populate()
     scene.clear()
     orbiters = {}
     time = 0
@@ -132,7 +129,7 @@ function M.on_populate()
     print("[lights] Keys: 1-3 shot, B bloom, -/= intensity, T/G threshold")
 end
 
-function M.on_update(dt)
+function on_update(dt)
     time = time + dt
 
     for _, o in ipairs(orbiters) do
@@ -156,7 +153,7 @@ function M.on_update(dt)
     end
 end
 
-function M.on_key(code)
+function on_key(code)
     if code >= key.NUM_1 and code < key.NUM_1 + SHOTS then
         shot = code - key.NUM_1
         return
@@ -182,8 +179,6 @@ function M.on_key(code)
         bloom.enabled and "on" or "off", bloom.intensity, bloom.threshold))
 end
 
-function M.camera()
+function on_camera()
     return { eye = eye, target = look_at, fov = fov, near = 0.1, far = 200 }
 end
-
-return M

@@ -67,7 +67,32 @@ TEST_CASE("a missing callback is a no-op, but asking it for results is an error"
     CHECK_FALSE(runtime.call("camera", {}, 1).ok);
 }
 
-TEST_CASE("the entry script must return a table") {
+TEST_CASE("the entry script may define its callbacks as global functions") {
+    auto runtime = make_runtime();
+
+    REQUIRE(load(runtime, R"(
+        wants_cursor = true
+        local calls = 0
+        function on_update(dt) calls = calls + dt end
+        function on_camera(aspect) return { fov = calls + aspect } end
+    )"));
+
+    CHECK(runtime.has_callback("on_update"));
+    CHECK(runtime.has_callback("on_camera"));
+    CHECK(runtime.callback_flag("wants_cursor"));
+    CHECK(runtime.call("on_update", std::array{2.0}).ok);
+    CHECK(runtime.call("on_camera", std::array{1.0}, 1).ok);
+}
+
+TEST_CASE("a global that is not a function is not a callback") {
+    auto runtime = make_runtime();
+
+    REQUIRE(load(runtime, "camera = {}"));
+
+    CHECK_FALSE(runtime.has_callback("camera"));
+}
+
+TEST_CASE("the entry script must return a table or nothing") {
     auto runtime = make_runtime();
 
     CHECK_FALSE(runtime.run_main("test.lua", "return 3").has_value());

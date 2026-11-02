@@ -4,9 +4,6 @@
 -- Red left wall, green right wall, white elsewhere, an emissive ceiling quad, no sun, and a thin divider wall that
 -- splits the back third off: irradiance behind it must stay ~0 for the leak test.
 
----@type GameScript
-local M = {}
-
 local SHOTS = {
     { eye = { 0, 2.5, 0.4 }, look = { 0, 2.2, 5 }, fov = 75 },
     { eye = { 1.5, 1.6, 1.0 }, look = { 0, 1.6, 5.5 }, fov = 70 },
@@ -30,7 +27,7 @@ local function box(name, cube, mat, centre, half)
     return e
 end
 
-function M.on_populate()
+function on_populate()
     scene.clear()
     scene.set_environment({ sky = "flat", skybox = false, ambient = 0.0, exposure_ev = 0, sun_intensity = 0 })
 
@@ -57,14 +54,12 @@ end
 local SHOT_FRAMES = 60
 local frames = 0
 
-function M.on_update(_)
+function on_update(_)
     frames = frames + 1
     shot = math.min(#SHOTS, math.floor(frames / SHOT_FRAMES) + 1)
 end
 
-function M.camera(_)
+function on_camera(_)
     local s = SHOTS[shot]
     return { eye = s.eye, target = s.look, fov = s.fov, near = 0.05, far = 100 }
 end
-
-return M

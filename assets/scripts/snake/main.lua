@@ -8,9 +8,6 @@
 local Config = require("snake.config")
 local Logic = require("snake.logic")
 
----@type GameScript
-local M = {}
-
 -- The food model: Khronos glTF-Sample-Assets (CC0), pinned to a commit and a hash. It is about 0.06 units tall, so
 -- it is scaled up to fit a cell.
 local FOOD_URL = "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/"
@@ -346,9 +343,9 @@ local function to_menu()
 end
 
 -- The menus are clicked with the mouse, so leave the cursor free instead of capturing it.
-M.wants_cursor = true
+wants_cursor = true
 
-function M.on_populate()
+function on_populate()
     scene.clear()
     math.randomseed(math.floor(game.time() * 1000) % 2147483647)
 
@@ -382,7 +379,7 @@ local function steer(name)
     end
 end
 
-function M.on_key(code)
+function on_key(code)
     if code == key.UP or code == key.W then
         steer("up")
     elseif code == key.DOWN or code == key.S then
@@ -418,7 +415,7 @@ function M.on_key(code)
     end
 end
 
-function M.on_update(dt)
+function on_update(dt)
     if screen == "playing" then
         Logic.update(round, math.min(dt, MAX_DT))
         sync_food()
@@ -444,7 +441,7 @@ function M.on_update(dt)
     cam.h = cam.h + (size.height + 2 * MARGIN - cam.h) * blend
 end
 
-function M.camera(aspect)
+function on_camera(aspect)
     local height = math.max(cam.h, cam.w / math.max(aspect, 0.1))
 
     return {
@@ -516,7 +513,7 @@ local function menu_window()
     end)
 end
 
-function M.on_ui()
+function on_ui()
     if screen == "menu" then
         menu_window()
         return
@@ -558,5 +555,3 @@ function M.on_ui()
         end)
     end
 end
-
-return M

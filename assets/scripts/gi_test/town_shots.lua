@@ -2,7 +2,9 @@
 -- model has streamed in.
 --   lathe --game=lua --script=assets/scripts/gi_test/town_shots.lua --player --exit-after-frames=1000 \
 --         --inject-keys=330:301,480:301,630:301,780:301,930:301
-local town = require("gi_test.town_walk")
+-- The walker defines the callbacks; this script wraps its on_update and gives it a `pose` (it looks that up when it runs).
+require("gi_test.town_walk")
+local base_update = on_update
 
 local POSES = {
     { eye = { 276, 2.6, 296 }, look = { 292, 1.2, 304 }, fov = 70 }, -- the west staircase of the plaza
@@ -14,14 +16,13 @@ local POSES = {
 local frame = 0
 
 -- Counted per update, not per call of pose(): the camera is asked for more than once a frame.
-local on_update = town.on_update
-town.on_update = function(dt)
+function on_update(dt)
     frame = frame + 1
-    return on_update(dt)
+    return base_update(dt)
 end
 
 local shown = 0
-town.pose = function()
+function pose()
     local index = math.max(1, math.min(#POSES, math.floor((frame - 190) / 150) + 1))
     if index ~= shown then
         shown = index
@@ -29,5 +30,3 @@ town.pose = function()
     end
     return POSES[index]
 end
-
-return town

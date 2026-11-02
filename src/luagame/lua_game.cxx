@@ -322,10 +322,13 @@ auto LuaGame::camera(Scene const & , float aspect_ratio) const -> CameraParams {
     glm::vec3 up{0.0F, 1.0F, 0.0F};
     float ortho_height = 0.0F;
 
-    if (self.runtime && self.runtime->has_callback("camera")) {
+    // `on_camera` is the callback of a script that defines global functions: there `camera` is the engine's library.
+    auto const *const camera_callback = self.runtime && self.runtime->has_callback("on_camera") ? "on_camera" : "camera";
+
+    if (self.runtime && self.runtime->has_callback(camera_callback)) {
         std::array const arguments{static_cast<double>(aspect_ratio)};
 
-        if (self.runtime->call("camera", arguments, 1).ok) {
+        if (self.runtime->call(camera_callback, arguments, 1).ok) {
             auto *const state = self.runtime->state();
             auto const table = lua_gettop(state);
 

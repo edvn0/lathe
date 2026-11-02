@@ -9,9 +9,6 @@
 -- --player; add --max-quality to turn every feature up. The walkable version of this scene is assets/scripts/bistro/main.lua.
 -- Keys: 1-3 camera shot (orbit, walk through, overview), Esc quits.
 
----@type GameScript
-local M = {}
-
 local BASE = "https://raw.githubusercontent.com/zeux/niagara_bistro/2bdb6a410f8ebd475d3737e7c8e038ed2b00b02e/"
 local FILES = {
     { name = "bistro/bistro.gltf", url = BASE .. "bistro.gltf",
@@ -25,7 +22,9 @@ local FILES = {
 -- A textured copy on disk (NVIDIA ORCA's BistroExterior.glb, also what assets/scripts/bistro/main.lua walks around) is
 -- used when it is there: the repo copy below has no usable textures. Bounds come from each glTF's node transforms and
 -- mesh extents.
-local LOCAL_MODEL = nil -- set by configure
+-- A textured copy on disk instead of the download: textured.lua sets LOCAL_MODEL = "/path/BistroExterior.glb" before this loads.
+---@type string?
+local LOCAL_MODEL = LOCAL_MODEL
 local LOCAL_BOUNDS = { min = { -62.5, -7.6, -96.5 }, max = { 111.3, 43.5, 87.9 } }
 local REMOTE_BOUNDS = { min = { -52.4, -4.7, -46.9 }, max = { 58.7, 27.2, 72.4 } }
 
@@ -85,12 +84,7 @@ local function add_lights()
     end
 end
 
--- Uses a textured copy on disk instead of the download: configure({ local_model = "/path/BistroExterior.glb" }).
-function M.configure(options)
-    LOCAL_MODEL = options.local_model
-end
-
-function M.on_populate()
+function on_populate()
     scene.clear()
     lights = {}
     time = 0
@@ -198,7 +192,7 @@ local function update_walk(dt)
     look_at = { walk.x + math.sin(walk.heading) * 6, walk.y + EYE_HEIGHT - 0.2, walk.z + math.cos(walk.heading) * 6 }
 end
 
-function M.on_update(dt)
+function on_update(dt)
     time = time + dt
 
     if use_local and state == "downloading" then
@@ -242,7 +236,7 @@ function M.on_update(dt)
     end
 end
 
-function M.on_key(code)
+function on_key(code)
     if code == key.ESCAPE then
         game.quit()
     elseif code == key.NUM_1 then
@@ -254,8 +248,6 @@ function M.on_key(code)
     end
 end
 
-function M.camera(aspect)
+function on_camera(aspect)
     return { eye = eye, target = look_at, fov = 60, near = 0.2, far = 600 }
 end
-
-return M
