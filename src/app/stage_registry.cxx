@@ -443,6 +443,15 @@ namespace stages {
                 shadows.settings().resolution_shift = static_cast<std::uint32_t>(resolution);
             }
             ImGui::SetItemTooltip("The resolution the mask is traced at, relative to the screen.");
+            ImGui::Checkbox("Temporal filter##rt_shadows", &shadows.settings().temporal_filter);
+            ImGui::SetItemTooltip("Blend the traced mask with the last frames' (reprojected) so the few noisy rays per pixel "
+                                  "settle; a pixel with no usable history gets a depth aware blur. Off shows the raw, "
+                                  "flickering mask.");
+            ImGui::BeginDisabled(!shadows.settings().temporal_filter);
+            ImGui::SliderFloat("Temporal blend##rt_shadows", &shadows.settings().temporal_blend, 0.02F, 0.5F, "%.2f");
+            ImGui::SetItemTooltip("How much of this frame's mask each frame brings in: lower is smoother but trails a "
+                                  "moving shadow longer.");
+            ImGui::EndDisabled();
             ImGui::SliderFloat("Sun angular radius", &shadows.settings().sun_spread, 0.0F, 0.03F, "%.4f rad");
             ImGui::SetItemTooltip("Half the angle of the cone of the sun's rays: the wider, the softer the shadow edges. The "
                                   "real sun is about 0.0047 across; 0 gives hard shadows.");

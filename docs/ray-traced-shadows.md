@@ -25,6 +25,14 @@ cascades (`ray_traced_sun_shadow` in `forward_geom.slang`), averaging the pixel 
   0.0047), stratified and turned per pixel by interleaved gradient noise. Two rays go first (the middle and a random point);
   only pixels where they disagree, the penumbra, trace two more, so most pixels cost two rays. 0.8 ms at 1280x720 in the
   town stress scene.
+- **Temporal filter.** The raw mask is noisy (a few jittered rays per pixel, a different set each frame), so it flickers even
+  with a still camera. `rt_shadow_resolve` (`assets/shaders/rt_shadow_resolve.slang`) reprojects the last resolved mask with the
+  previous frame's view projection, keeps the four bilinear taps whose stored view depth matches the surface, clamps the result
+  to the raw mask's 3x3 neighbourhood (a moving shadow leaves no trail) and blends 10% of the raw mask in
+  (`Settings::temporal_blend`), so it settles in about ten frames. A pixel with no usable history (off screen, disoccluded, camera
+  cut, history just created) gets a depth aware 5x5 blur of the raw mask instead. The history is two RGBA8 masks and two R32F view
+  depth images, swapped every frame, owned by `RayTracedShadows` and recreated when the mask's extent changes (that waits for the
+  GPU). It filters the local light slots too. The frame graph panel's "Temporal filter" switches it (`Settings::temporal_filter`).
 - **Resolution.** The mask can be traced at half or quarter of the screen size: `[render] ray_traced_shadow_resolution =
   "auto" | "full" | "half" | "quarter"` (default `auto`: follows the performance tier, `docs/performance-tiers.md`) (Edit > Project Settings > Rendering, applied the next time the project opens; the frame graph
   panel's "Ray traced shadows" stage switches it while the editor runs). Each mask pixel traces from one pixel of the block
