@@ -35,7 +35,7 @@ public:
         std::array<std::uint32_t, 3> counts{32, 8, 32};
         float spacing = 1.0F;
         // A multiple of 64 up to max_rays_per_probe.
-        std::uint32_t rays_per_probe = 64;
+        std::uint32_t rays_per_probe = 256;
         // A probe seeing more back faces than this fraction of its rays is inside geometry.
         float back_face_limit = 0.25F;
         float hysteresis = 0.97F;

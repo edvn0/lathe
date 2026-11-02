@@ -14,7 +14,7 @@ The project's `lathe.project` (a packaged game's `game.toml`) takes a `[gi]` tab
 ```toml
 [gi]
 enabled = true            # false leaves the scene on the environment's flat diffuse term
-rays_per_probe = 64       # 64, 128, 192 or 256
+rays_per_probe = 256      # 64, 128, 192 or 256; fewer is cheaper but flickers (about 1.3 ms per 64 rays at 1920x1080)
 probe_spacing = 1.0       # metres between probes of the near cascade; the coarse cascade is 4x
 intensity = 1.0           # scale of the probes' diffuse light
 emitter_intensity = 200   # how strongly small emissive pieces (bulbs) light their surroundings
@@ -359,7 +359,7 @@ crescent in the shadow mask); the GI will want a normal bias or a finer LOD for 
 - `ProbeVolume` (`include/rendering/probe_volume.hxx`): game graph passes in `after_lighting`, graphics queue,
   behind the scene TLAS build. A persistent `gi_probe_state` buffer (2 float4 per probe) and a transient `gi_ray_data`
   buffer (8 bytes per ray: RGB16F radiance and a signed half distance, negative for a back face hit).
-- Grid `32x8x32`, spacing 1 m, 64 rays per probe (`--gi-probe-spacing`, `--gi-rays-per-probe`), centred on the camera
+- Grid `32x8x32`, spacing 1 m, 256 rays per probe (64 at first; `--gi-probe-spacing`, `--gi-rays-per-probe`), centred on the camera
   in whole probe steps. Toroidal addressing: slot = world index mod counts, so a probe keeps its slot while the grid
   scrolls. Rays are Fibonacci directions rotated by a random rotation per frame.
 - `gi_probe_trace.slang`: one ray per thread, ray query against the scene TLAS. Hits are shaded with the sun (shadow
