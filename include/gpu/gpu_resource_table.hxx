@@ -100,6 +100,10 @@ public:
     // bind, so call it before the first frame that uses the table; a no-op without ray query support.
     auto set_acceleration_structure(VkAccelerationStructureKHR structure) noexcept -> void;
 
+    // Writes only one frame's set. The caller guarantees that frame's previous submission has finished and that no
+    // command buffer recorded with the set is still waiting to be submitted (binding 6 is not update after bind).
+    auto set_acceleration_structure(std::uint32_t frame_index, VkAccelerationStructureKHR structure) noexcept -> void;
+
     auto bind(VkCommandBuffer command_buffer, std::uint32_t frame_index, VkPipelineBindPoint bind_point,
               VkPipelineLayout pipeline_layout) const noexcept -> void;
 

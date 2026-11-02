@@ -566,6 +566,193 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                               });
     }
 
+    // The ray tracing scene (docs/probe-gi.md): BLASes for new meshes and the TLAS of this frame's instances. It writes the
+    // TLAS storage buffer, which ray query passes read; the pass ends with a barrier for ray queries later on this queue.
+    auto scene_tlas = frame_graph::BufferId{};
+    if (!secondary && ray_tracing_scene_enabled_ && scene_rt_.active()) {
+        scene_tlas = frame_graph_.import_buffer({
+                .entry = buffer_idle,
+                .exit = buffer_idle,
+                .debug_name = "scene_tlas",
+                .buffer = physical_buffer(scene_rt_.tlas_buffer()),
+        });
+        frame_graph_.add_pass("scene_acceleration_structure", frame_graph::PassType::compute,
+                              {
+                                      .name_id = "scene_acceleration_structure",
+                                      .label = "Scene BLAS/TLAS build",
+                                      .color = static_cast<std::uint32_t>(tracy::Color::DeepPink),
+                              },
+                              [&](frame_graph::PassBuilder &pass) {
+                                  // The skinned instances' bottom levels are built from the skinning output.
+                                  if (skinning_active) {
+                                      [[maybe_unused]] auto const skinned = pass.read(
+                                              skin_scratch, frame_graph::Use::shader_read, compute_stage);
+                                  }
+                                  scene_tlas = pass.write(scene_tlas, frame_graph::Use::acceleration_structure_build);
+                                  pass.side_effect();
+
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      scene_rt_.record_build(context.command_buffer);
+                                  }};
+                              });
+    }
+
+    // The probe GI volume (docs/probe-gi.md): rays from every probe against the TLAS, the probes' classification, the
+    // blend into the two atlases and their borders. The forward pass reads the atlases and the probe state.
+    auto gi_state = frame_graph::BufferId{};
+    auto gi_irradiance = frame_graph::ImageId{};
+    auto gi_distance = frame_graph::ImageId{};
+    auto gi_far_state = frame_graph::BufferId{};
+    auto gi_far_irradiance = frame_graph::ImageId{};
+    auto gi_far_distance = frame_graph::ImageId{};
+    auto const gi_active = !secondary && probe_volume_.active() && scene_tlas.valid() &&
+                           scene_rt_.instance_table_address() != 0;
+    // The coarser cascade only exists when the near one does and was created; it samples and traces like it.
+    auto const gi_far_active = gi_active && probe_volume_far_.active();
+    struct GiCascadeNames {
+        char const *state;
+        char const *rays;
+        char const *irradiance;
+        char const *distance;
+        char const *trace;
+        char const *trace_label;
+        char const *classify;
+        char const *classify_label;
+        char const *blend;
+        char const *blend_label;
+        char const *border;
+        char const *border_label;
+    };
+    constexpr auto gi_sampled = frame_graph::ResourceState{
+            .layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .stages = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            .access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+    };
+    auto const gi_profile = [](char const *name, char const *label) {
+        return frame_graph::PassProfile{
+                .name_id = name,
+                .label = label,
+                .color = static_cast<std::uint32_t>(tracy::Color::Gold),
+        };
+    };
+    auto const add_gi_cascade = [&](ProbeVolume &volume, GiCascadeNames const &names, frame_graph::BufferId &probes,
+                                    frame_graph::ImageId &irradiance, frame_graph::ImageId &distance) {
+        auto const entry = volume.atlases_initialised() ? gi_sampled : frame_graph::ResourceState{};
+        // The probe state and the atlases are used by every frame in flight, so their first use waits for the last
+        // frame's last use.
+        probes = frame_graph_.import_buffer({
+                .entry = persistent_buffer_state,
+                .exit = persistent_buffer_state,
+                .debug_name = names.state,
+                .buffer = physical_buffer(volume.state_buffer()),
+        });
+        auto rays = frame_graph_.import_buffer({
+                .entry = persistent_buffer_state,
+                .exit = persistent_buffer_state,
+                .debug_name = names.rays,
+                .buffer = physical_buffer(volume.ray_buffer()),
+        });
+        irradiance = frame_graph_.import_image({
+                .entry = entry,
+                .exit = gi_sampled,
+                .debug_name = names.irradiance,
+                .image = physical_image(volume.irradiance_image()),
+        });
+        distance = frame_graph_.import_image({
+                .entry = entry,
+                .exit = gi_sampled,
+                .debug_name = names.distance,
+                .image = physical_image(volume.distance_image()),
+        });
+        volume.mark_atlases_initialised();
+        // A cascade that skips this frame is only sampled by the forward pass.
+        if (!volume.updating()) {
+            return;
+        }
+
+        frame_graph_.add_pass(names.trace, frame_graph::PassType::compute, gi_profile(names.trace, names.trace_label),
+                              [&](frame_graph::PassBuilder &pass) {
+                                  [[maybe_unused]] auto const tlas =
+                                          pass.read(scene_tlas, frame_graph::Use::acceleration_structure_read,
+                                                    compute_stage);
+                                  // Last frame's atlases: a ray that hits a surface asks the volume what lights it.
+                                  [[maybe_unused]] auto const irradiance_read =
+                                          pass.read(irradiance, frame_graph::Use::sampled, compute_stage);
+                                  [[maybe_unused]] auto const distance_read =
+                                          pass.read(distance, frame_graph::Use::sampled, compute_stage);
+                                  probes = pass.write(probes, frame_graph::Use::shader_read_write, compute_stage);
+                                  rays = pass.write(rays, frame_graph::Use::shader_write, compute_stage);
+                                  pass.side_effect();
+
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      volume.record_trace(
+                                              context.command_buffer, info.frame_index,
+                                              {.instance_table = scene_rt_.instance_table_address(),
+                                               .materials = material_storage_.device_address(),
+                                               .ubo = ubos_[info.frame_index].device_address,
+                                               .lights = frame.lights_buffer.valid()
+                                                                 ? frame.lights_buffer.device_address
+                                                                 : 0,
+                                               .light_count = frame.light_count});
+                                  }};
+                              });
+
+        frame_graph_.add_pass(names.classify, frame_graph::PassType::compute,
+                              gi_profile(names.classify, names.classify_label), [&](frame_graph::PassBuilder &pass) {
+                                  [[maybe_unused]] auto const rays_read =
+                                          pass.read(rays, frame_graph::Use::shader_read, compute_stage);
+                                  probes = pass.write(probes, frame_graph::Use::shader_read_write, compute_stage);
+                                  pass.side_effect();
+
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      volume.record_classify(context.command_buffer, info.frame_index);
+                                  }};
+                              });
+
+        frame_graph_.add_pass(names.blend, frame_graph::PassType::compute, gi_profile(names.blend, names.blend_label),
+                              [&](frame_graph::PassBuilder &pass) {
+                                  [[maybe_unused]] auto const rays_read =
+                                          pass.read(rays, frame_graph::Use::shader_read, compute_stage);
+                                  [[maybe_unused]] auto const probe_state =
+                                          pass.read(probes, frame_graph::Use::shader_read, compute_stage);
+                                  irradiance = pass.write(irradiance, frame_graph::Use::storage_read_write,
+                                                          compute_stage);
+                                  distance = pass.write(distance, frame_graph::Use::storage_read_write, compute_stage);
+                                  pass.side_effect();
+
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      volume.record_blend(context.command_buffer, info.frame_index);
+                                  }};
+                              });
+
+        frame_graph_.add_pass(names.border, frame_graph::PassType::compute,
+                              gi_profile(names.border, names.border_label), [&](frame_graph::PassBuilder &pass) {
+                                  irradiance = pass.write(irradiance, frame_graph::Use::storage_read_write,
+                                                          compute_stage);
+                                  distance = pass.write(distance, frame_graph::Use::storage_read_write, compute_stage);
+                                  pass.side_effect();
+
+                                  return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                                      volume.record_border(context.command_buffer, info.frame_index);
+                                  }};
+                              });
+    };
+    if (gi_active) {
+        add_gi_cascade(probe_volume_,
+                       GiCascadeNames{"gi_probe_state", "gi_ray_data", "gi_irradiance_atlas", "gi_distance_atlas",
+                                      "gi_probe_trace", "Probe trace", "gi_probe_classify", "Probe classify",
+                                      "gi_probe_blend", "Probe blend", "gi_probe_border", "Probe border"},
+                       gi_state, gi_irradiance, gi_distance);
+    }
+    if (gi_far_active) {
+        add_gi_cascade(probe_volume_far_,
+                       GiCascadeNames{"gi_far_probe_state", "gi_far_ray_data", "gi_far_irradiance_atlas",
+                                      "gi_far_distance_atlas", "gi_far_probe_trace", "Far probe trace",
+                                      "gi_far_probe_classify", "Far probe classify", "gi_far_probe_blend",
+                                      "Far probe blend", "gi_far_probe_border", "Far probe border"},
+                       gi_far_state, gi_far_irradiance, gi_far_distance);
+    }
+
     frame_graph_.add_pass("gpu_culling", frame_graph::PassType::compute,
                           {
                                   .name_id = "gpu_culling",
@@ -1157,6 +1344,61 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                 });
     }
 
+    // Ray traced sun shadows: a mask of the sun's visibility at every pixel's surface point, from the depth buffer and the
+    // scene TLAS; the forward pass reads it where it used to look the point up in the cascades (docs/ray-traced-shadows.md).
+    auto rt_shadow_image = frame_graph::ImageId{};
+    // Local lights with a shadow tile are traced too (the first three per pixel, in the cluster list's order).
+    auto const rt_local_lights_active = !secondary && ray_traced_shadows_.ready() &&
+                                        ray_traced_shadows_.settings().enabled &&
+                                        ray_traced_shadows_.settings().local_lights && frame.lights_have_shadow_tiles &&
+                                        frame.light_count != 0 && (!clustered || cluster_lights.valid());
+    auto const rt_shadows_active = !secondary && ray_traced_shadows_.ready() && ray_traced_shadows_.settings().enabled &&
+                                   scene_tlas.valid() && scene_rt_.instance_table_address() != 0 &&
+                                   (light_.intensity > 0.0F || rt_local_lights_active);
+    if (rt_shadows_active) {
+        frame_graph_.add_pass(
+                "rt_shadows", frame_graph::PassType::compute,
+                {
+                        .name_id = "rt_shadows",
+                        .label = "Ray traced shadows",
+                        .color = static_cast<std::uint32_t>(tracy::Color::DeepPink),
+                },
+                [&](frame_graph::PassBuilder &pass) {
+                    [[maybe_unused]] auto const tlas =
+                            pass.read(scene_tlas, frame_graph::Use::acceleration_structure_read, compute_stage);
+                    [[maybe_unused]] auto const depth =
+                            pass.read(resolved_depth_image, frame_graph::Use::sampled, compute_stage);
+                    if (rt_local_lights_active && clustered) {
+                        [[maybe_unused]] auto const clusters =
+                                pass.read(cluster_lights, frame_graph::Use::shader_read, compute_stage);
+                    }
+                    rt_shadow_image = pass.create(ao_description("rt_shadow_mask"));
+                    rt_shadow_image = pass.write(rt_shadow_image, frame_graph::Use::storage_write, compute_stage,
+                                                 frame_graph::ExitUse{frame_graph::Use::sampled});
+                    pass.side_effect();
+
+                    return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                        ray_traced_shadows_.record(
+                                context.command_buffer, info.frame_index,
+                                {.inverse_view_projection = glm::inverse(frame.view_projection),
+                                 .instance_table = scene_rt_.instance_table_address(),
+                                 .materials = material_storage_.device_address(),
+                                 .depth_texture = transient_index(resolved_depth_image),
+                                 .mask_storage = transient_index(rt_shadow_image),
+                                 .width = targets->extent.width,
+                                 .height = targets->extent.height,
+                                 .sun = glm::normalize(light_.direction),
+                                 .trace_sun = light_.intensity > 0.0F,
+                                 .trace_local = rt_local_lights_active,
+                                 .ubo = ubos_[info.frame_index].device_address,
+                                 .lights = frame.lights_buffer.device_address,
+                                 .cluster_lights = clustered ? frame.cluster_lights_buffer.device_address + cluster_stats_bytes
+                                                             : VkDeviceAddress{0},
+                                 .light_count = frame.light_count});
+                    }};
+                });
+    }
+
     // With water on screen the forward pass is split in two around a copy of the scene colour and depth: the opaque
     // and masked draws (and the sky), then the blended draws, which sample the copy to refract (docs/water.md).
     // Without water it stays one pass and nothing is copied.
@@ -1168,6 +1410,25 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
 
     auto const declare_forward_reads = [&](frame_graph::PassBuilder &pass, bool with_overlays) {
         [[maybe_unused]] auto const shadows = pass.read(shadow_image, frame_graph::Use::sampled, fragment_stage);
+        if (rt_shadows_active) {
+            [[maybe_unused]] auto const rt_shadows = pass.read(rt_shadow_image, frame_graph::Use::sampled, fragment_stage);
+        }
+        if (gi_active) {
+            [[maybe_unused]] auto const gi_irradiance_read =
+                    pass.read(gi_irradiance, frame_graph::Use::sampled, fragment_stage);
+            [[maybe_unused]] auto const gi_distance_read =
+                    pass.read(gi_distance, frame_graph::Use::sampled, fragment_stage);
+            [[maybe_unused]] auto const gi_state_read =
+                    pass.read(gi_state, frame_graph::Use::shader_read, fragment_stage);
+            if (gi_far_active) {
+                [[maybe_unused]] auto const gi_far_irradiance_read =
+                        pass.read(gi_far_irradiance, frame_graph::Use::sampled, fragment_stage);
+                [[maybe_unused]] auto const gi_far_distance_read =
+                        pass.read(gi_far_distance, frame_graph::Use::sampled, fragment_stage);
+                [[maybe_unused]] auto const gi_far_state_read =
+                        pass.read(gi_far_state, frame_graph::Use::shader_read, fragment_stage);
+            }
+        }
         if (local_shadows_active) {
             [[maybe_unused]] auto const local_shadows =
                     pass.read(local_shadow_image, frame_graph::Use::sampled, fragment_stage);
@@ -1262,9 +1523,14 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
         // The split opaque phase writes no HDR image of its own when multisampled (its resolve is the colour copy);
         // the blended phase hands on the real one.
         auto const output = phase == render_pass::ForwardPhase::opaque && multisampled ? scene_colour_copy : hdr_image;
+        // The blended draws are not in the depth buffer the mask was made from: they keep the cascaded shadow map.
+        auto const rt_shadow_index = rt_shadows_active && phase != render_pass::ForwardPhase::blend
+                                             ? transient_index(rt_shadow_image)
+                                             : 0xFFFFFFFFU;
         auto const hdr = record_forward_pass(pass_context, frame, *targets, state.handoff.ao_texture_index,
                                              transient_index(output), render_pass::Callback::bind(scene_overlays),
-                                             phase, scene_copies.first, scene_copies.second);
+                                             phase, scene_copies.first, scene_copies.second, rt_shadow_index,
+                                             rt_local_lights_active && phase != render_pass::ForwardPhase::blend);
         if (hdr) {
             state.handoff.hdr = *hdr;
         } else {
@@ -1673,12 +1939,15 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
         error("Could not compile the frame graph: {}", compiled.error());
         return std::unexpected(make_error(RendererErrorType::invalid_argument));
     }
+    auto const plan_switched = frame_plan_ != *compiled;
     frame_plan_ = *compiled;
 
     auto const plan_changed = plan_cache_->misses() != logged_plan_misses_;
     if (plan_changed) {
         perf_events::record(PerfEvent::frame_graph_compile);
         logged_plan_misses_ = plan_cache_->misses();
+    }
+    if (plan_changed || plan_switched) {
         if (!secondary) {
             frame_graph_view_ = frame_graph::FrameGraphView{
                     .graph = frame_graph_.description(),
@@ -1686,6 +1955,8 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                     .revision = frame_graph_view_.revision + 1,
             };
         }
+    }
+    if (plan_changed) {
         for (auto const &finding: frame_graph::lint(frame_graph_.description(), *frame_plan_)) {
             ::warn("Frame graph lint: {}", finding);
         }

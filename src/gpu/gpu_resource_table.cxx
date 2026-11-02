@@ -222,6 +222,30 @@ auto GpuResourceTable::set_acceleration_structure(VkAccelerationStructureKHR str
     }
 }
 
+auto GpuResourceTable::set_acceleration_structure(std::uint32_t frame_index,
+                                                  VkAccelerationStructureKHR structure) noexcept -> void {
+    if (context_ == nullptr || !context_->ray_query_supported || frame_index >= frames_.size()) {
+        return;
+    }
+
+    VkWriteDescriptorSetAccelerationStructureKHR const acceleration{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR,
+            .pNext = nullptr,
+            .accelerationStructureCount = 1,
+            .pAccelerationStructures = &structure,
+    };
+    VkWriteDescriptorSet const write{
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .pNext = &acceleration,
+            .dstSet = frames_[frame_index].descriptor_set,
+            .dstBinding = binding_index(GpuResourceBinding::acceleration_structure),
+            .dstArrayElement = 0,
+            .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+    };
+    vkUpdateDescriptorSets(context_->device, 1, &write, 0, nullptr);
+}
+
 auto GpuResourceTable::prepare_frame(std::uint32_t frame_index, ImageStorage const &images,
                                      SamplerStorage const &samplers) -> std::expected<void, GpuResourceTableError> {
     if (context_ == nullptr || frame_index >= frames_.size() || images.capacity() > image_capacity_ ||

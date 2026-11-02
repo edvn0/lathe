@@ -1,6 +1,7 @@
 module tint;
 
 import bindless;
+import common;
 
 // Mirrors tint.json: its bindings, then its params, in that order.
 struct TintPushConstants
@@ -11,7 +12,6 @@ struct TintPushConstants
     float3 tint;
 };
 
-public [[vk::binding(4, 0)]] RWTexture2D<float4> storage_2d[];
 
 [vk::push_constant] TintPushConstants pc;
 

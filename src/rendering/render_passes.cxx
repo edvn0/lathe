@@ -782,6 +782,8 @@ namespace render_pass {
                 .occlusion_address = info.occlusion_view_address,
                 .scene_colour_index = info.scene_colour_index,
                 .scene_depth_index = info.scene_depth_index,
+                .rt_shadow_texture = info.rt_shadow_texture_index,
+                .rt_local_shadows = info.rt_local_shadows ? 1U : 0U,
         };
 
         auto opaque_pc = pc;

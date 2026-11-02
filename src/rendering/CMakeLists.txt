@@ -41,13 +41,16 @@ add_library(
         particle_system.cxx
         planet_system.cxx
         pipeline_graph_repository.cxx
-        ray_tracing_poc.cxx
+        probe_volume.cxx
+        emitter_grid.cxx
+        ray_traced_shadows.cxx
         renderer.cxx
         renderer_frame_graph.cxx
         renderer_views.cxx
         rendering_error_describe.cxx
         render_passes.cxx
         scene.cxx
+        scene_acceleration_structure.cxx
         static_model_cache.cxx
         sky_model.cxx
         screenshot.cxx

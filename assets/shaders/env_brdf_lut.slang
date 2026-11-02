@@ -1,6 +1,7 @@
 module env_brdf_lut;
 
 import bindless;
+import common;
 import environment;
 
 struct EnvBrdfLutPushConstants
@@ -10,7 +11,6 @@ struct EnvBrdfLutPushConstants
     uint sample_count;
 };
 
-public [[vk::binding(4, 0)]] RWTexture2D<float4> storage_2d[];
 
 [vk::push_constant] EnvBrdfLutPushConstants pc;
 

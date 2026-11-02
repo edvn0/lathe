@@ -2,6 +2,7 @@
 
 #include <volk.h>
 
+#include <optional>
 #include <string_view>
 
 struct VulkanContext;
@@ -17,6 +18,9 @@ namespace device_checkpoints {
 
     // Records a marker named 'name' into 'commands'. The name is interned, so the marker outlives the caller's string.
     auto set(VkCommandBuffer commands, std::string_view name) -> void;
+
+    // The name a marker pointer stands for (the pointer the driver reports), if it is one this process made.
+    [[nodiscard]] auto resolve(void const *marker) -> std::optional<std::string_view>;
 
     // Logs the last marker each queue of 'context' reached.
     auto report(VulkanContext const &context) -> void;

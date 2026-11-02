@@ -1,6 +1,7 @@
 module composite;
 
 import bindless;
+import common;
 
 struct CompositePC {
     uint hdr_texture_index;
@@ -95,13 +96,6 @@ float3 hdr_rolloff(float3 colour, float peak_relative)
 }
 
 // PCG hash of the pixel coordinate.
-uint pcg_hash(uint v)
-{
-    uint state = v * 747796405u + 2891336453u;
-    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
-}
-
 // White noise with a triangular distribution in [-1, 1]. Unlike interleaved gradient noise it has no structure, so
 // it doesn't leave faint patterns on very shallow gradients.
 float dither_noise(float2 pixel)
@@ -116,11 +110,6 @@ float dither_noise(float2 pixel)
 float3 linear_to_srgb(float3 c)
 {
     return select(c <= 0.0031308, c * 12.92, 1.055 * pow(c, 1.0 / 2.4) - 0.055);
-}
-
-float3 srgb_to_linear(float3 c)
-{
-    return select(c <= 0.04045, c / 12.92, pow((c + 0.055) / 1.055, 2.4));
 }
 
 // Colour grading through a lut_size^3 volume (x = red, y = green, z = blue). `encoded` is display-referred

@@ -334,7 +334,7 @@ auto Application::draw_main_menu_bar() -> void {
     ImGui::SameLine();
     ImGui::BeginDisabled(is_playing);
     {
-        auto const size = ImGui::GetFrameHeight() - 6.0F;
+        auto const size = gui::EditorIcons::snapped_size(ImGui::GetFrameHeight() - 6.0F);
         auto const tool = [&](gui::EditorIcon icon, bool active, char const *id, char const *tooltip) {
             auto const bg = active ? ImVec4{0.18F, 0.50F, 0.93F, 0.55F} : ImVec4{0.0F, 0.0F, 0.0F, 0.0F};
             auto const tint = active ? ImVec4{1.0F, 1.0F, 1.0F, 1.0F} : ImVec4{0.68F, 0.68F, 0.72F, 1.0F};

@@ -200,6 +200,25 @@ public struct GpuEnvironmentSh
     public float4 coefficients[9];
 };
 
+// The probe GI volume (probe_volume.hxx, gi_probes.slang). Mirrors ProbeVolume::GpuBlock.
+public struct GpuGiBlock {
+    public Ptr<float4> probe_state;
+    public uint irradiance_texture;
+    public uint distance_texture;
+    public int base_x;
+    public int base_y;
+    public int base_z;
+    public uint flags;
+    public uint count_x;
+    public uint count_y;
+    public uint count_z;
+    public float spacing;
+    public float intensity;
+    public float normal_bias;
+    public float view_bias;
+    public float padding;
+};
+
 public struct UBO {
     public float4x4 view_projection;
     public float4x4 view;
@@ -291,6 +310,10 @@ public struct UBO {
     public Ptr<uint> overdraw_counts;
     public uint overdraw_width;
     public uint overdraw_size;
+
+    public GpuGiBlock gi;
+    // The coarser cascade around the same camera (flags 0 when the frame has none).
+    public GpuGiBlock gi_far;
 };
 
 public struct PC
@@ -322,7 +345,18 @@ public struct PC
     // opaque and masked draws, for the blended draws that refract (water). 0 when no copy was taken this frame.
     public uint scene_colour_index;
     public uint scene_depth_index;
+
+    // Bindless index (sampled_2d, R8) of the ray traced sun shadow mask of this frame, or rt_shadow_none for the cascaded
+    // shadow map (no ray tracing, a secondary view, the blended pass: its surfaces are not in the depth buffer).
+    public uint rt_shadow_texture;
+    // 1 when the mask's G, B and A hold the visibility of the first three shadow casting lights of the pixel's light list
+    // (rt_shadows.slang), 0 when the lights keep the shadow atlas.
+    public uint rt_local_shadows;
 };
+
+public static const uint rt_local_shadow_slots = 3u;
+
+public static const uint rt_shadow_none = 0xFFFFFFFFu;
 
 public static const uint shadow_flag_tiles = 1u;
 public static const uint shadow_flag_remap = 2u;

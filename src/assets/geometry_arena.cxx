@@ -10,6 +10,11 @@
 
 namespace {
 
+    // Lets the scene acceleration structure (rendering/scene_acceleration_structure.cxx) build bottom level structures
+    // straight from the resident vertex and index data. Only usable when VK_KHR_acceleration_structure is enabled.
+    constexpr auto acceleration_structure_input_usage =
+            VkBufferUsageFlags{VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR};
+
     [[nodiscard]]
     constexpr auto index_element_size(VkIndexType index_type) noexcept -> VkDeviceSize {
         switch (index_type) {
@@ -69,7 +74,9 @@ auto GeometryArenaT<Allocator>::create(VulkanContext &ctx, GeometryArenaCreateIn
                                         .size = create_info.capacity,
                                         .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                                                  VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                                 (ctx.ray_query_supported ? acceleration_structure_input_usage
+                                                                          : VkBufferUsageFlags{0}),
                                         .memory = BufferMemory::device,
                                         .debug_name = create_info.debug_name,
                                 });
@@ -303,7 +310,9 @@ auto GeometryArenaT<Allocator>::grow(VkCommandBuffer command_buffer, VkDeviceSiz
                                .size = new_capacity,
                                .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
                                         VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
-                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                        (context_->ray_query_supported ? acceleration_structure_input_usage
+                                                                       : VkBufferUsageFlags{0}),
                                .memory = BufferMemory::device,
                                .debug_name = debug_name_.view(),
                        });

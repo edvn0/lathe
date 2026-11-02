@@ -53,6 +53,7 @@
 #include "rendering/blend_order.hxx"
 #include "rendering/cluster_grid.hxx"
 #include "rendering/environment.hxx"
+#include "rendering/scene_acceleration_structure.hxx"
 #include "rendering/forward_target.hxx"
 #include "rendering/colour_lut.hxx"
 #include "rendering/frame_graph/compiler.hxx"
@@ -62,6 +63,8 @@
 #include "rendering/frame_graph/view.hxx"
 #include "rendering/game_gpu.hxx"
 #include "rendering/hiz_occlusion.hxx"
+#include "rendering/probe_volume.hxx"
+#include "rendering/ray_traced_shadows.hxx"
 #include "rendering/meshlet_visibility.hxx"
 #include "rendering/pipeline_graph_repository.hxx"
 #include "rendering/render_passes.hxx"
@@ -311,10 +314,14 @@ struct UBO {
     VkDeviceAddress overdraw_counts_address = 0;
     std::uint32_t overdraw_width = 0;
     std::uint32_t overdraw_size = 0;
+
+    ProbeVolume::GpuBlock gi{};
+    ProbeVolume::GpuBlock gi_far{};
 };
 
-static_assert(sizeof(UBO) == 1024, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
+static_assert(sizeof(UBO) == 1152, "UBO layout changed -- update the mirror in assets/shaders/scene_types.slang");
 static_assert(offsetof(UBO, environment) == 816);
+static_assert(offsetof(UBO, gi) == 1024);
 static_assert(std::is_trivially_copyable_v<UBO>);
 static_assert(offsetof(UBO, cascade_view_projection) == 288);
 static_assert(offsetof(UBO, cascade_atlas_offset_u) == 592);
@@ -794,6 +801,20 @@ struct Renderer final : public IMeshSink, public IModelSink {
     [[nodiscard]] auto texture_streamer() noexcept -> TextureStreamer & override { return texture_streamer_; }
     [[nodiscard]] auto model_streamer() noexcept -> ModelStreamer & { return model_streamer_; }
     [[nodiscard]] auto resource_table() noexcept -> GpuResourceTable & { return gpu_resource_table_; }
+
+    // The ray tracing view of the scene: a BLAS per submesh and a TLAS rebuilt every frame from the batched instances.
+    // Off until something asks for it (the probe GI, the ray traced shadows), because it costs a build every frame.
+    auto set_ray_tracing_scene_enabled(bool enabled) noexcept -> void { ray_tracing_scene_enabled_ = enabled; }
+    [[nodiscard]] auto ray_tracing_scene_enabled() const noexcept -> bool { return ray_tracing_scene_enabled_; }
+    [[nodiscard]] auto scene_acceleration() noexcept -> SceneAccelerationStructure & { return scene_rt_; }
+    // The probe GI volume (docs/probe-gi.md): call create() once the scene acceleration structure is ready; it turns the ray
+    // tracing scene on. Settings can change between frames.
+    [[nodiscard]] auto ray_traced_shadows() noexcept -> RayTracedShadows & { return ray_traced_shadows_; }
+    [[nodiscard]] auto ray_traced_shadows() const noexcept -> RayTracedShadows const & { return ray_traced_shadows_; }
+    [[nodiscard]] auto probe_volume() noexcept -> ProbeVolume & { return probe_volume_; }
+    [[nodiscard]] auto probe_volume() const noexcept -> ProbeVolume const & { return probe_volume_; }
+    [[nodiscard]] auto probe_volume_far() noexcept -> ProbeVolume & { return probe_volume_far_; }
+    [[nodiscard]] auto probe_volume_far() const noexcept -> ProbeVolume const & { return probe_volume_far_; }
 
     [[nodiscard]] auto assets() noexcept -> AssetRegistry & { return assets_; }
     [[nodiscard]] auto assets() const noexcept -> AssetRegistry const & { return assets_; }
@@ -1495,6 +1516,8 @@ private:
             -> std::expected<void, RendererError>;
     [[nodiscard]] auto batch_max_shadow_cascade(BatchEntry const *batch) const noexcept -> std::int32_t;
     auto plan_shadow_batches(RendererFrame &frame, BatchBuild &build) -> void;
+    // Hands this frame's opaque, double sided and alpha masked instances to the ray tracing scene.
+    auto update_ray_tracing_scene(std::uint32_t frame_index) -> void;
     [[nodiscard]] auto emit_batches(RendererFrame &frame, BatchBuild &build) -> std::expected<void, RendererError>;
 
     auto clear_submissions() noexcept -> void;
@@ -1632,7 +1655,8 @@ private:
                              FrameTargets const &targets, std::uint32_t ao_texture_index,
                              std::uint32_t hdr_texture_index, render_pass::Callback scene_overlays,
                              render_pass::ForwardPhase phase = render_pass::ForwardPhase::all,
-                             std::uint32_t scene_colour_index = 0, std::uint32_t scene_depth_index = 0)
+                             std::uint32_t scene_colour_index = 0, std::uint32_t scene_depth_index = 0,
+                             std::uint32_t rt_shadow_texture_index = 0xFFFFFFFFU, bool rt_local_shadows = false)
             -> std::expected<render_pass::HdrTextureIndex, RendererError>;
 
     [[nodiscard]]
@@ -1702,6 +1726,12 @@ private:
     std::vector<PendingPickGeometry> pending_pick_geometry_;
     AssetRegistry assets_{};
     GpuResourceTable gpu_resource_table_{};
+    SceneAccelerationStructure scene_rt_{};
+    ProbeVolume probe_volume_{};
+    RayTracedShadows ray_traced_shadows_{};
+    // The coarser cascade: four times the spacing, so the volume reaches four times as far for the same probe count.
+    ProbeVolume probe_volume_far_{};
+    bool ray_tracing_scene_enabled_ = false;
 
     std::vector<Buffer> ubos_;
 

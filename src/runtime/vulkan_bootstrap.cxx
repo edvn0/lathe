@@ -1,5 +1,7 @@
 #include "runtime/vulkan_bootstrap.hxx"
 
+#include "gpu/gpu_crash_dumps.hxx"
+
 #include "gpu/device_checkpoints.hxx"
 #include <volk.h>
 
@@ -859,6 +861,16 @@ namespace {
             device_extensions.push_back(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
         }
 
+        // GPU crash dumps (gpu_crash_dumps): the driver's diagnostics settings for this device.
+        auto const diagnostics_flags = gpu_crash_dumps::device_flags();
+        auto const diagnostics_supported =
+                diagnostics_flags != 0 &&
+                supports_device_extension(context.physical_device, VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
+
+        if (diagnostics_supported) {
+            device_extensions.push_back(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME);
+        }
+
         if (context.ray_query_supported) {
             device_extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
             device_extensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
@@ -956,9 +968,15 @@ namespace {
         enabled_features.shaderInt64 = VK_TRUE;
         enabled_features.drawIndirectFirstInstance = VK_TRUE;
 
+        VkDeviceDiagnosticsConfigCreateInfoNV const diagnostics_info{
+                .sType = VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV,
+                .pNext = feature_chain,
+                .flags = diagnostics_flags,
+        };
+
         VkDeviceCreateInfo const create_info{
                 .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-                .pNext = feature_chain,
+                .pNext = diagnostics_supported ? static_cast<void const *>(&diagnostics_info) : feature_chain,
                 .flags = 0,
                 .queueCreateInfoCount = static_cast<std::uint32_t>(queue_create_infos.size()),
                 .pQueueCreateInfos = queue_create_infos.data(),

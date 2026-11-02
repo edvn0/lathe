@@ -1300,11 +1300,11 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         auto &registry = active_scene()->get_registry();
 
         {
-            float const icon_sz = ImGui::GetTextLineHeight();
+            float const icon_sz = gui::EditorIcons::snapped_size(ImGui::GetTextLineHeight());
             float const frame_h = ImGui::GetFrameHeight();
             ImVec2 const row_start = ImGui::GetCursorPos();
 
-            ImGui::SetCursorPos(ImVec2(row_start.x + style.FramePadding.x, row_start.y + (frame_h - icon_sz) * 0.5F));
+            ImGui::SetCursorPos(ImVec2(row_start.x + style.FramePadding.x, row_start.y + gui::EditorIcons::centred_offset(frame_h, icon_sz)));
             ImGui::ImageWithBg(editor_icons->texture(gui::EditorIcon::search), ImVec2(icon_sz, icon_sz), ImVec2(0, 0),
                                ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(0.55F, 0.55F, 0.60F, 1.0F));
 
@@ -1375,7 +1375,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         };
 
         float const row_height = ImGui::GetFrameHeight();
-        float const icon_size = ImGui::GetTextLineHeight();
+        float const icon_size = gui::EditorIcons::snapped_size(ImGui::GetTextLineHeight());
 
         auto const draw_alternate_background = [&](std::size_t row_index) {
             if (row_index % 2 == 1) {
@@ -1403,7 +1403,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImVec2 const after_row_pos = ImGui::GetCursorPos();
 
             float const label_x = row_pos.x + ImGui::GetTreeNodeToLabelSpacing();
-            ImGui::SetCursorPos(ImVec2(label_x, row_pos.y + (row_height - icon_size) * 0.5F));
+            ImGui::SetCursorPos(ImVec2(label_x, row_pos.y + gui::EditorIcons::centred_offset(row_height, icon_size)));
             ImGui::ImageWithBg(editor_icons->texture(gui::EditorIcon::folder), ImVec2(icon_size, icon_size),
                                ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0), ImVec4(0.95F, 0.80F, 0.45F, 1.0F));
             ImGui::SetCursorPos(ImVec2(label_x + icon_size + style.ItemInnerSpacing.x,
@@ -1487,7 +1487,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 ImGui::EndDragDropTarget();
             }
 
-            ImGui::SetCursorPos(ImVec2(label_x, row_pos.y + (row_height - icon_size) * 0.5F));
+            ImGui::SetCursorPos(ImVec2(label_x, row_pos.y + gui::EditorIcons::centred_offset(row_height, icon_size)));
             ImGui::ImageWithBg(editor_icons->texture(visual.icon), ImVec2(icon_size, icon_size), ImVec2(0, 0),
                                ImVec2(1, 1), ImVec4(0, 0, 0, 0), visual.tint);
 
@@ -2879,10 +2879,50 @@ auto Application::update_model_loads() -> void {
         if (component == nullptr || component->model != load.model) {
             continue;
         }
+        spawn_model_lights(load.scene, load.entity, load.model);
         if (auto const submesh_bounds = renderer->model_submesh_bounds(load.model)) {
             registry.emplace<Components::RigidBody>(load.entity,
                                                     Components::RigidBody::from_submesh_boxes(*submesh_bounds));
         }
+    }
+}
+
+// The lights a model carries (authored in the file, or made from its emissive meshes) become point lights parented to
+// the model's entity, at their place in the model. Their range is in the model's units, so the entity's scale applies.
+auto Application::spawn_model_lights(Scene *scene, entt::entity model_entity, ModelHandle model) -> void {
+    auto &registry = scene->get_registry();
+    // With the probe GI on, the emissive meshes light the scene themselves: the stand-in lights would count them twice.
+    auto const synth = std::string_view{gi_config.synthesize_lights};
+    if (synth == "off" || (synth != "on" && renderer->probe_volume().ready())) {
+        return;
+    }
+    auto const lights = renderer->model_lights(model);
+    auto const *parent_transform = registry.try_get<Components::Transform>(model_entity);
+    if (lights.empty() || parent_transform == nullptr) {
+        return;
+    }
+
+    auto const scale = std::abs(parent_transform->scale.x);
+    auto const *const parent_meta = registry.try_get<Components::Meta>(model_entity);
+    auto const parent_name = parent_meta != nullptr ? std::string{parent_meta->name.view()} : std::string{"Model"};
+    std::uint32_t count = 0;
+
+    for (auto const &light: lights) {
+        if (light.type != ModelLightType::point) {
+            continue;
+        }
+        auto entity = Entity{scene, "{} light {}", parent_name, count++};
+        entity.emplace<Components::Transform>(Components::Transform{.position = light.position});
+        entity.emplace<Components::Parent>(Components::Parent{.entity = model_entity});
+        entity.emplace<Components::PointLight>(Components::PointLight{
+                .colour = light.colour,
+                .intensity = light.intensity,
+                .range = light.range * scale,
+        });
+    }
+
+    if (count > 0) {
+        info("[Application] Added {} point light(s) from the model's lights", count);
     }
 }
 

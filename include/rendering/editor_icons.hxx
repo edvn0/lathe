@@ -35,6 +35,11 @@ namespace gui {
 
         [[nodiscard]] auto texture(EditorIcon icon) const noexcept -> ImTextureID;
 
+        // Icons are only crisp when drawn at a whole number of pixels, on a whole pixel: round the size, and floor
+        // the offset that centres it in a row.
+        [[nodiscard]] static auto snapped_size(float size) noexcept -> float;
+        [[nodiscard]] static auto centred_offset(float available, float size) noexcept -> float;
+
     private:
         std::array<ImageHandle, static_cast<std::size_t>(EditorIcon::count)> textures_{};
     };

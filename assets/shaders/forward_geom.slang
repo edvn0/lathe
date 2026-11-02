@@ -1,4 +1,5 @@
 import bindless;
+import common;
 import scene_types;
 import wind;
 import pbr;
@@ -6,6 +7,7 @@ import meshlet_task;
 import light_clusters;
 import environment;
 import local_shadows;
+import gi_probes;
 #ifdef BLEND_PASS
 import water;
 #endif
@@ -133,13 +135,6 @@ struct OutputFS
     float outline : SV_Target1;
 #endif
 };
-
-uint pcg_hash(uint value)
-{
-    const uint state = value * 747796405u + 2891336453u;
-    const uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
-}
 
 float3 debug_meshlet_colour(uint cluster_id)
 {
@@ -291,6 +286,21 @@ DecalLayers gather_decals(PC pc, float3 world_position, float3 geometric_normal,
     return layers;
 }
 
+// The ray traced sun visibility (rt_shadows.slang) at a pixel: the pixel and its four neighbours, the centre counting
+// double, which turns the pass's one noisy ray per pixel into a soft edge. Neighbours are clamped to the screen.
+float ray_traced_sun_shadow(PC pc, float2 pixel)
+{
+    const var mask = sampled_2d[pc.rt_shadow_texture];
+    int2 size = int2(pc.screen_size);
+    int2 centre = clamp(int2(pixel), int2(0), size - 1);
+    float sum = mask.Load(int3(centre, 0)).r * 4.0;
+    sum += mask.Load(int3(clamp(centre + int2(1, 0), int2(0), size - 1), 0)).r;
+    sum += mask.Load(int3(clamp(centre - int2(1, 0), int2(0), size - 1), 0)).r;
+    sum += mask.Load(int3(clamp(centre + int2(0, 1), int2(0), size - 1), 0)).r;
+    sum += mask.Load(int3(clamp(centre - int2(0, 1), int2(0), size - 1), 0)).r;
+    return sum * 0.125;
+}
+
 float sample_shadow_atlas(Ptr<UBO> ubo, uint cascade, float2 tile_uv, float reference)
 {
     const var atlas = sampled_2d_depth[NonUniformResourceIndex(ubo.shadow_atlas_texture)];
@@ -321,7 +331,7 @@ float sample_shadow_atlas(Ptr<UBO> ubo, uint cascade, float2 tile_uv, float refe
 
 float3 shade_light(Ptr<UBO> ubo, GpuLight punctual_light, float3 world_position, float3 geometric_normal,
                    float3 shading_normal, float3 view_direction, float3 base_colour, float metallic, float roughness,
-                   float fade)
+                   float fade, float traced_visibility)
 {
     float3 to_light = punctual_light.position - world_position;
     float distance = length(to_light);
@@ -345,7 +355,8 @@ float3 shade_light(Ptr<UBO> ubo, GpuLight punctual_light, float3 world_position,
         return float3(0.0);
     }
 
-    radiance *= local_shadow(ubo, punctual_light, world_position, geometric_normal);
+    // A negative traced visibility means the light has no ray traced shadow: it reads the atlas.
+    radiance *= traced_visibility >= 0.0 ? traced_visibility : local_shadow(ubo, punctual_light, world_position, geometric_normal);
 
     return shade_punctual(shading_normal, view_direction, light_dir, radiance, base_colour, metallic, roughness);
 }
@@ -459,7 +470,10 @@ OutputFS main_fs(VertexOutput input, bool is_front_face: SV_IsFrontFace, uniform
 
     float shadow = 1.0;
 
-    if (ndotl > 0.0 && cascade < ubo.cascade_count) {
+    if (pc.rt_shadow_texture != rt_shadow_none) {
+        // Ray traced: the surface faces away from the sun where ndotl is 0, which the BRDF already handles.
+        shadow = ray_traced_sun_shadow(pc, input.position.xy);
+    } else if (ndotl > 0.0 && cascade < ubo.cascade_count) {
         float texel = ubo.cascade_texel_world[cascade];
         float3 biased = input.world_position + normal * (texel * ubo.shadow_normal_offset_texels * 1.41421356);
 
@@ -553,6 +567,15 @@ var base_colour = base_sample.xyz *
     float3 punctual_contribution = float3(0.0);
     uint cluster_light_count = 0;
 
+    // Ray traced local shadows: G, B and A of the mask hold the visibility of the pixel's first shadow casting lights, in
+    // list order (the same count rt_shadows.slang makes). Lights past those keep the atlas.
+    float4 traced_local = float4(1.0);
+    uint shadow_slot = 0;
+    if (pc.rt_local_shadows != 0) {
+        const int2 mask_size = int2(pc.screen_size);
+        traced_local = sampled_2d[pc.rt_shadow_texture].Load(int3(clamp(int2(input.position.xy), int2(0), mask_size - 1), 0));
+    }
+
     if (ubo.clustered_lighting != 0) {
         const float4 clip = mul(ubo.view_projection, float4(input.world_position, 1.0));
         const uint cluster = cluster_index(ubo, clip, view_z);
@@ -575,11 +598,20 @@ var base_colour = base_sample.xyz *
             }
 
             const GpuLight light = pc.lights[light_index];
+            // A light this pixel's own list does not hold lies out of reach of its cluster: it adds next to nothing.
+            const bool owned = lane_next == light_index;
+            float traced_visibility = -1.0;
+            if (owned && light.shadow_tile != no_shadow_tile) {
+                if (pc.rt_local_shadows != 0 && shadow_slot < rt_local_shadow_slots) {
+                    traced_visibility = traced_local[1 + shadow_slot];
+                }
+                ++shadow_slot;
+            }
             punctual_contribution += shade_light(ubo, light, input.world_position, normal, shading_normal,
                                                  view_direction, base_colour, metallic, roughness,
-                                                 light_screen_fade(ubo, light));
+                                                 light_screen_fade(ubo, light), traced_visibility);
 
-            if (lane_next == light_index) {
+            if (owned) {
                 ++cursor;
                 lane_next = cursor < stored_count ? pc.cluster_lights[list_base + cursor] : list_end;
             }
@@ -587,9 +619,16 @@ var base_colour = base_sample.xyz *
     } else {
         for (uint light_index = 0; light_index < pc.light_count; ++light_index) {
             const GpuLight light = pc.lights[light_index];
+            float traced_visibility = -1.0;
+            if (light.shadow_tile != no_shadow_tile) {
+                if (pc.rt_local_shadows != 0 && shadow_slot < rt_local_shadow_slots) {
+                    traced_visibility = traced_local[1 + shadow_slot];
+                }
+                ++shadow_slot;
+            }
             punctual_contribution += shade_light(ubo, light, input.world_position, normal, shading_normal,
                                                  view_direction, base_colour, metallic, roughness,
-                                                 light_screen_fade(ubo, light));
+                                                 light_screen_fade(ubo, light), traced_visibility);
         }
     }
 
@@ -617,9 +656,16 @@ var base_colour = base_sample.xyz *
         float3 prefiltered = sampled_cube[ubo.prefilter_cube_texture].SampleLevel(
             samplers[ubo.environment_sampler], rotate_y(reflected, unrotate), roughness * ubo.environment_rotation.z).rgb;
 
+        // The diffuse intensity is the environment's own knob; the probe volume carries its own (gi_intensity).
+        irradiance *= ubo.environment_intensity.x;
         if (furnace) {
-            irradiance = float3(1.0);
+            irradiance = float3(ubo.environment_intensity.x);
             prefiltered = float3(1.0);
+        } else if ((ubo.gi.flags & gi_flag_enabled) != 0) {
+            float gi_coverage;
+            const float3 gi_irradiance = gi_sample_irradiance(ubo, input.world_position, shading_normal,
+                                                              view_direction, gi_coverage);
+            irradiance = lerp(irradiance, gi_irradiance, gi_coverage);
         }
 
         float so = 1.0;
@@ -630,7 +676,7 @@ var base_colour = base_sample.xyz *
         const float horizon = saturate(1.0 + dot(reflected, normal));
 
         const float3 diffuse_ibl = base_colour * (1.0 - metallic) * (1.0 - specular_albedo) * irradiance *
-                                   ambient_occlusion * ubo.environment_intensity.x;
+                                   ambient_occlusion;
         const float3 specular_ibl = prefiltered * specular_albedo * energy * so * horizon * horizon * ubo.environment_intensity.y;
 
         ambient = (diffuse_ibl + specular_ibl) * ubo.environment_exposure;
@@ -643,7 +689,15 @@ var base_colour = base_sample.xyz *
             ambient = float3(so);
         }
     } else {
-        ambient = base_colour * ambient_occlusion * ubo.ambient_intensity;
+        float3 flat_irradiance = float3(ubo.ambient_intensity);
+        if ((ubo.gi.flags & gi_flag_enabled) != 0) {
+            // No environment lighting: the probe volume still lights the scene, in the units the IBL path outputs.
+            float gi_coverage;
+            const float3 gi_irradiance = gi_sample_irradiance(ubo, input.world_position, shading_normal,
+                                                              view_direction, gi_coverage) * ubo.environment_exposure;
+            flat_irradiance = lerp(flat_irradiance, gi_irradiance, gi_coverage);
+        }
+        ambient = base_colour * ambient_occlusion * flat_irradiance;
     }
 
     float3 emissive = emissive_texture.Sample(sampler, uv).xyz *
@@ -693,6 +747,17 @@ var base_colour = base_sample.xyz *
         const uint2 pixel = uint2(input.position.xy);
         const uint slot = pixel.y * ubo.overdraw_width + pixel.x;
         fogged_colour = overdraw_heatmap_colour(slot < ubo.overdraw_size ? ubo.overdraw_counts[slot] : 0u);
+    }
+
+    if ((ubo.gi.flags & gi_flag_enabled) != 0) {
+        const uint gi_debug = ubo.gi.flags >> gi_flag_debug_shift;
+        if (gi_debug == 1) {
+            float gi_coverage;
+            fogged_colour = gi_sample_irradiance(ubo, input.world_position, shading_normal, view_direction,
+                                                 gi_coverage) * 0.5 * ubo.environment_exposure;
+        } else if (gi_debug == 2) {
+            fogged_colour = lerp(fogged_colour, gi_debug_state_colour(ubo, input.world_position), 0.7);
+        }
     }
 
     OutputFS output;

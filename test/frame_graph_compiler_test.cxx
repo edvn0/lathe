@@ -194,6 +194,35 @@ TEST_SUITE("unit") {
         CHECK(barrier.dst_access == VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
     }
 
+    TEST_CASE("an acceleration structure build then a ray query read gives a build to shader barrier") {
+        auto graph = FrameGraph{};
+        auto current = graph.import_buffer({
+                .entry = {.stages = VK_PIPELINE_STAGE_2_NONE},
+                .exit = {.stages = VK_PIPELINE_STAGE_2_NONE},
+                .debug_name = "scene_tlas",
+        });
+        graph.add_pass("build", PassType::compute, {}, [&](PassBuilder &p) {
+            current = p.write(current, Use::acceleration_structure_build);
+            return noop();
+        });
+        graph.add_pass("trace", PassType::compute, {}, [&](PassBuilder &p) {
+            [[maybe_unused]] auto const tlas = p.read(current, Use::acceleration_structure_read, compute_stage);
+            p.side_effect();
+            return noop();
+        });
+
+        auto const compiled = compile(graph, graphics_only());
+        REQUIRE(compiled.has_value());
+        auto const *trace = find_pass(*compiled, 1);
+        REQUIRE(trace != nullptr);
+        REQUIRE(trace->before.buffers.size() == 1);
+        auto const &barrier = trace->before.buffers.front();
+        CHECK(barrier.src_stages == VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR);
+        CHECK((barrier.src_access & VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR) != 0);
+        CHECK((barrier.dst_stages & VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT) != 0);
+        CHECK(barrier.dst_access == VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
+    }
+
     TEST_CASE("the swapchain goes UNDEFINED to colour attachment then to present") {
         auto graph = FrameGraph{};
         auto const target = make_target(graph, "swapchain", true);

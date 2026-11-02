@@ -240,6 +240,11 @@ namespace render_pass {
         std::uint32_t ao_texture_index = 0;
         std::uint32_t ao_sampler_index = 0;
 
+        // The ray traced sun shadow mask, or 0xFFFFFFFF to use the cascaded shadow map.
+        std::uint32_t rt_shadow_texture_index = 0xFFFFFFFFU;
+        // The mask's G, B and A hold the visibility of the pixel's first shadow casting local lights.
+        bool rt_local_shadows = false;
+
         bool outline_mask = false;
     };
 

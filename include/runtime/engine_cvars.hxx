@@ -60,6 +60,7 @@ namespace cvars {
     extern CVar<bool> max_quality;
     extern CVar<std::uint32_t> max_texture_size;
     extern CVar<float> texture_rdo;
+    extern CVar<float> ui_font_size;
 
     // Presentation.
     extern CVar<bool> vsync;
@@ -73,8 +74,6 @@ namespace cvars {
     extern CVar<bool> frame_graph_dump;
     extern CVar<bool> validation;
     extern CVar<std::string> frame_graph_dot;
-    extern CVar<bool> rt_poc;
-    extern CVar<std::string> rt_poc_view;
 
     // Game and scene.
     extern CVar<std::string> script;

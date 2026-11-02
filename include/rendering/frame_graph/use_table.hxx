@@ -7,7 +7,8 @@ namespace frame_graph {
     inline constexpr VkAccessFlags2 write_access_mask =
             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_SHADER_WRITE_BIT |
-            VK_ACCESS_2_HOST_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+            VK_ACCESS_2_HOST_WRITE_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT |
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
 
     struct UseInfo {
         VkPipelineStageFlags2 stages = VK_PIPELINE_STAGE_2_NONE;
@@ -208,6 +209,21 @@ namespace frame_graph {
                         .stages = VK_PIPELINE_STAGE_2_HOST_BIT,
                         .access = VK_ACCESS_2_HOST_READ_BIT,
                         .reads = true,
+                };
+            case Use::acceleration_structure_build:
+                return {
+                        .stages = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                        .access = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+                                  VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+                        .reads = true,
+                        .writes = true,
+                };
+            case Use::acceleration_structure_read:
+                return {
+                        .stages = shader | VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                        .access = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR,
+                        .reads = true,
+                        .needs_shader_stages = true,
                 };
             case Use::token_write:
                 return {

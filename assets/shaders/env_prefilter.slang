@@ -1,6 +1,7 @@
 module env_prefilter;
 
 import bindless;
+import common;
 import environment;
 
 struct EnvPrefilterPushConstants
@@ -16,7 +17,6 @@ struct EnvPrefilterPushConstants
     float roughness;
 };
 
-public [[vk::binding(4, 0)]] RWTexture2D<float4> storage_2d[];
 
 [vk::push_constant] EnvPrefilterPushConstants pc;
 

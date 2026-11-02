@@ -1,6 +1,7 @@
 module gtao;
 
 import bindless;
+import common;
 import scene_types;
 
 struct GtaoPushConstants
@@ -20,11 +21,9 @@ struct GtaoPushConstants
     uint _padding;
 };
 
-public [[vk::binding(4, 0)]] RWTexture2D<float4> storage_2d[];
 
 [vk::push_constant] GtaoPushConstants pc;
 
-static const float pi = 3.14159265358979323846;
 
 float3 view_pos_from_depth(float4x4 inv_proj, float2 uv, float depth)
 {

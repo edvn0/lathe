@@ -1254,6 +1254,9 @@ auto Renderer::initialize(RendererCreateInfo const &create_info) -> std::expecte
     sampler_storage_ = std::move(*sampler_storage);
     geometry_arena_ = std::move(*geometry_arena);
     material_storage_ = std::move(*material_storage);
+    if (!scene_rt_.create(context_, gpu_resource_table_)) {
+        debug("[Renderer::initialize] no ray tracing scene (VK_KHR_ray_query unavailable)");
+    }
 
     auto pipeline_infos = make_pipeline_register_infos(create_info);
 
@@ -1929,7 +1932,12 @@ auto Renderer::create_frame_resources(RendererFrame &frame, VkExtent2D extent, s
                                                                    .size = std::max<VkDeviceSize>(
                                                                            skin_scratch_capacity_, 256),
                                                                    .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                                            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                                                            // Skinned instances get a bottom level
+                                                                            // structure built from the output.
+                                                                            (context_.ray_query_supported
+                                                                                     ? VkBufferUsageFlags{VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR}
+                                                                                     : VkBufferUsageFlags{0}),
                                                                    .memory = BufferMemory::device,
                                                                    .debug_name = "renderer.frame_skin_scratch",
                                                            });
@@ -2069,6 +2077,10 @@ auto Renderer::destroy() noexcept -> void {
     environment_.destroy();
 
     pipeline_graph_.destroy();
+    ray_traced_shadows_.destroy();
+    probe_volume_far_.destroy();
+    probe_volume_.destroy();
+    scene_rt_.destroy();
     gpu_resource_table_.destroy();
     sampler_storage_.destroy();
 
@@ -3311,6 +3323,7 @@ auto Renderer::update_submesh_geometry(MeshHandle mesh, std::uint32_t submesh_in
     }
 
     slot->submeshes[submesh_index].lods = lods;
+    ++slot->submeshes[submesh_index].revision;
 
     mark_shadow_casters_dirty();
     return {};
@@ -4384,6 +4397,30 @@ auto Renderer::emit_batches(RendererFrame &frame, BatchBuild &build) -> std::exp
                         });
                         frame.skin_scratch_used += skin_bytes;
                         frame.skinned_vertices += skin_vertex_count;
+
+                        // A skinned instance deforms every frame, so it gets a bottom level structure of its own, built
+                        // from the skinned output at the LOD it is drawn at.
+                        // Only those near enough to matter to the probe volume.
+                        auto const &skin_settings = probe_volume_.settings();
+                        auto const skin_reach = 0.5F * static_cast<float>(std::max(skin_settings.counts[0],
+                                                                                    skin_settings.counts[2])) *
+                                                        skin_settings.spacing +
+                                                8.0F;
+                        if (scene_rt_.building() && batch.transforms[instance] != nullptr &&
+                            glm::distance(glm::vec3{(*batch.transforms[instance])[3]}, frame.lod_camera_position) <=
+                                    skin_reach &&
+                            geometry.indices.index_type == VK_INDEX_TYPE_UINT32 &&
+                            geometry.vertices.vertex_stride == SceneAccelerationStructure::vertex_stride &&
+                            instance < batch.transforms.size()) {
+                            scene_rt_.add_skinned(
+                                    SceneAccelerationStructure::SkinnedGeometry{
+                                            .vertex_address = instance_vertex_address,
+                                            .index_address = geometry_arena_.device_address(geometry.indices.bytes),
+                                            .vertex_count = skin_vertex_count,
+                                            .index_count = geometry.indices.index_count,
+                                    },
+                                    material_index, *batch.transforms[instance]);
+                        }
                     } else {
                         ++frame.skin_fallback_instances;
                     }
@@ -4576,6 +4613,99 @@ auto Renderer::emit_batches(RendererFrame &frame, BatchBuild &build) -> std::exp
     return {};
 }
 
+auto Renderer::update_ray_tracing_scene(std::uint32_t frame_index) -> void {
+    if (!ray_tracing_scene_enabled_ || !scene_rt_.ready()) {
+        return;
+    }
+    ZoneScopedNC("RayTracingScene", tracy::Color::DeepPink);
+
+    scene_rt_.begin_frame(frame_index);
+    probe_volume_.begin_emitters(frame_index);
+    probe_volume_far_.begin_emitters(frame_index);
+
+    auto const add_batches = [this](std::vector<BatchEntry const *> const &batches, std::uint32_t base_flags) {
+        for (auto const *batch: batches) {
+            // Skinned geometry deforms, so a static BLAS would be wrong; it joins in a later phase.
+            if (batch->skinned || batch->transforms.empty()) {
+                continue;
+            }
+            auto const *mesh = mesh_slot(batch->mesh);
+            if (mesh == nullptr || batch->submesh_index >= mesh->submeshes.size()) {
+                continue;
+            }
+            auto const &submesh = mesh->submeshes[batch->submesh_index];
+
+            // Tracing does not need the raster detail: the coarsest LOD with triangles.
+            auto const *geometry = static_cast<MeshGeometry const *>(nullptr);
+            for (auto level = lod_count; level-- > 0;) {
+                if (submesh.lods[level].indices.index_count >= 3 && submesh.lods[level].vertices.vertex_count != 0) {
+                    geometry = &submesh.lods[level];
+                    break;
+                }
+            }
+            if (geometry == nullptr || geometry->vertices.vertex_stride != SceneAccelerationStructure::vertex_stride) {
+                continue;
+            }
+
+            // Small emissive pieces (a bulb, a lantern's glass) light the volume through the probe volume's emitter list:
+            // a ray hits them too rarely. Larger ones are lit only by the rays that reach them.
+            auto instance_flags = base_flags;
+            if (probe_volume_.ready()) {
+                auto const *material_info = material_storage_.create_info(batch->material);
+                auto const emission =
+                        material_info != nullptr ? material_info->emissive_factor * material_info->emissive_strength
+                                                 : glm::vec3{0.0F};
+                if (std::max({emission.x, emission.y, emission.z}) > 0.0F) {
+                    auto const centre = (submesh.bounds_min + submesh.bounds_max) * 0.5F;
+                    auto const half_extent = glm::length(submesh.bounds_max - submesh.bounds_min) * 0.5F;
+                    auto small = true;
+                    for (auto const *transform: batch->transforms) {
+                        auto const scale = std::max({glm::length(glm::vec3{(*transform)[0]}),
+                                                     glm::length(glm::vec3{(*transform)[1]}),
+                                                     glm::length(glm::vec3{(*transform)[2]})});
+                        small = small && half_extent * scale <= ProbeVolume::small_emitter_radius;
+                    }
+                    if (small) {
+                        instance_flags |= SceneAccelerationStructure::flag_explicit_emitter;
+                        for (auto const *transform: batch->transforms) {
+                            auto const scale = std::max({glm::length(glm::vec3{(*transform)[0]}),
+                                                         glm::length(glm::vec3{(*transform)[1]}),
+                                                         glm::length(glm::vec3{(*transform)[2]})});
+                            auto const emitter = ProbeVolume::Emitter{
+                                    .centre = glm::vec3{*transform * glm::vec4{centre, 1.0F}},
+                                    .radius = std::max(half_extent * scale, 0.01F),
+                                    .material_index = material_storage_.gpu_index(batch->material),
+                            };
+                            probe_volume_.add_emitter(emitter);
+                            probe_volume_far_.add_emitter(emitter);
+                        }
+                    }
+                }
+            }
+
+            scene_rt_.add(
+                    SceneAccelerationStructure::Geometry{
+                            .key = SceneAccelerationStructure::key_of(batch->mesh.index, batch->mesh.generation,
+                                                                      batch->submesh_index),
+                            .vertex_offset = geometry->vertices.bytes.offset,
+                            .index_offset = geometry->indices.bytes.offset,
+                            .vertex_address = geometry_arena_.vertex_address(geometry->vertices),
+                            .index_address = geometry_arena_.device_address(geometry->indices.bytes),
+                            .vertex_count = geometry->vertices.vertex_count,
+                            .index_count = geometry->indices.index_count,
+                            .index_type = geometry->indices.index_type,
+                            .revision = submesh.revision,
+                    },
+                    material_storage_.gpu_index(batch->material), batch->transforms, instance_flags);
+        }
+    };
+    add_batches(opaque_batches_, 0U);
+    add_batches(double_sided_batches_, 0U);
+    add_batches(mask_batches_, SceneAccelerationStructure::flag_alpha_tested);
+    probe_volume_.finish_emitters();
+    probe_volume_far_.finish_emitters();
+}
+
 auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices const &matrices,
                                   std::uint32_t frame_index, bool secondary) -> std::expected<void, RendererError> {
     // A secondary view takes the submissions the primary view already collected, and leaves everything that happens
@@ -4737,7 +4867,19 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
         return std::unexpected(classified.error());
     }
     plan_shadow_batches(frame, build_state);
-    if (auto emitted = emit_batches(frame, build_state); !emitted) {
+    if (!secondary) {
+        update_ray_tracing_scene(frame_index);
+        probe_volume_.begin_frame(camera_position, light_.direction, light_.colour * light_.intensity,
+                                  environment_.ubo_block());
+        probe_volume_far_.begin_frame(camera_position, light_.direction, light_.colour * light_.intensity,
+                                      environment_.ubo_block());
+    }
+    auto emitted = emit_batches(frame, build_state);
+    if (!secondary) {
+        // The skinned instances join the scene while the batches are emitted; now the instance list is complete.
+        scene_rt_.end_frame();
+    }
+    if (!emitted) {
         return std::unexpected(emitted.error());
     }
 
@@ -4832,6 +4974,15 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
     auto const shadow_scene_changed =
             !shadow_scene_signature_valid_ || current_shadow_scene_signature != shadow_scene_signature_;
     auto const shadow_casters_changed = cached_shadow_caster_revision_ != shadow_caster_revision_;
+    // Where the traced sun mask covers every surface the frame shades (no blended draws, which the mask does not hold), the
+    // cascades are not read at all: skip the pass and drop the cache, so the first frame that needs them redraws all.
+    auto const cascades_unused = !secondary && frame.blend_indirect_count == 0 && ray_tracing_scene_enabled_ &&
+                                 scene_rt_.active() && scene_rt_.instance_table_address() != 0 &&
+                                 ray_traced_shadows_.ready() && ray_traced_shadows_.settings().enabled &&
+                                 light_.intensity > 0.0F;
+    if (cascades_unused) {
+        shadow_global_state_valid_ = false;
+    }
     auto const force_all_cascades = !shadow_settings_.cache_enabled || !shadow_atlas_initialized_ ||
                                     shadow_global_state_changed || shadow_scene_changed || shadow_casters_changed ||
                                     projection_shape_changed;
@@ -4853,7 +5004,8 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
                 !cached.valid || !nearly_equal(candidate_cascades.view_projection[cascade], cached.view_projection);
 
         auto const dynamic_due = (dynamic_casters_dirty || has_animated_shadow_casters) && period_due;
-        auto const update = force_all_cascades || cascade == 0U || (matrix_changed && period_due) || dynamic_due;
+        auto const update =
+                !cascades_unused && (force_all_cascades || cascade == 0U || (matrix_changed && period_due) || dynamic_due);
 
         if (update) {
             frame.shadow_update_mask |= bit;
@@ -5533,6 +5685,8 @@ auto Renderer::prepare_frame_view(VkCommandBuffer command_buffer, CameraMatrices
             .overdraw_counts_address = overdraw_active ? frame.overdraw_buffer.device_address : 0,
             .overdraw_width = overdraw_active ? extent_.width : 0U,
             .overdraw_size = overdraw_active ? extent_.width * extent_.height : 0U,
+            .gi = probe_volume_.gpu_block(),
+            .gi_far = probe_volume_far_.gpu_block(),
     };
 
     if (!ubos_[frame_index].write(0, std::span{&ubo, 1})) {
@@ -6933,7 +7087,8 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                                    FrameTargets const &targets, std::uint32_t ao_texture_index,
                                    std::uint32_t hdr_texture_index, render_pass::Callback scene_overlays,
                                    render_pass::ForwardPhase phase, std::uint32_t scene_colour_index,
-                                   std::uint32_t scene_depth_index)
+                                   std::uint32_t scene_depth_index, std::uint32_t rt_shadow_texture_index,
+                                   bool rt_local_shadows)
         -> std::expected<render_pass::HdrTextureIndex, RendererError> {
     auto const frame_index = pass_context.frame_index;
 
@@ -6974,6 +7129,8 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                     .draw_grid = editor_grid_,
                     .ao_texture_index = ao_texture_index,
                     .ao_sampler_index = sampler_storage_.linear_clamp().index,
+                    .rt_shadow_texture_index = rt_shadow_texture_index,
+                    .rt_local_shadows = rt_local_shadows,
                     .outline_mask = true,
             },
             scene_overlays);

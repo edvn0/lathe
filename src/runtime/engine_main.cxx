@@ -90,6 +90,7 @@
 #include "scene/components.hxx"
 #include "scene/selection_context.hxx"
 #include "scene/editor_camera.hxx"
+#include "gpu/gpu_crash_dumps.hxx"
 #include "runtime/vulkan_bootstrap.hxx"
 
 namespace {
@@ -995,7 +996,6 @@ namespace {
         runtime.debug_renderer.reset();
         runtime.imgui_renderer.reset();
         runtime.text_renderer.reset();
-        runtime.ray_tracing_poc.destroy();
         runtime.renderer->destroy();
 
         context.destroy();
@@ -1290,6 +1290,19 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
 
     context.undecorated_window = profile.custom_title_bar() && screen_type == ScreenType::windowed;
 
+    {
+        // GPU crash dumps are collected from before the device exists; after a device-lost restart (LATHE_RELAUNCHED) the
+        // full diagnostics are on, so a crash that comes back leaves everything the driver can say about it.
+        auto const text = launch ? launch->diagnostics.gpu_crash_dumps : std::string{"auto"};
+        auto const mode = gpu_crash_dumps::mode_from(text, std::getenv("LATHE_RELAUNCHED") != nullptr);
+        gpu_crash_dumps::start({
+                .mode = mode.value_or(gpu_crash_dumps::Mode::standard),
+                .directory = Paths::user_state_directory() / "gpu_crashes",
+                .application = launch && !launch->name.empty() ? launch->name : std::string{"lathe"},
+                .version = launch ? launch->version : std::string{},
+        });
+    }
+
     if (!initialize_vulkan(context, screen_type)) {
         error("Vulkan initialization failed");
 
@@ -1413,15 +1426,14 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
         info("--max-quality: MSAA up to 4x ({}x supported), fog, AO {}x{}, up to 64 shadowed local lights",
              static_cast<std::uint32_t>(renderer.max_samples()), ao.slice_count, ao.step_count);
     }
-    runtime.ray_tracing_poc_enabled = cvars::rt_poc.get();
+    runtime.gi_config = launch ? launch->gi : GiSettings{};
+    runtime.render_config = launch ? launch->render : RenderSettings{};
     {
-        auto const names = RayTracingPoc::view_names;
-        auto const found = std::ranges::find(names, std::string_view{cvars::rt_poc_view.get()});
-        if (found == names.end()) {
-            warn("--rt-poc-view '{}' is not a view; using beauty", cvars::rt_poc_view.get());
-        } else {
-            runtime.ray_tracing_poc.set_view(static_cast<std::uint32_t>(found - names.begin()));
-        }
+        auto &gi = runtime.renderer->probe_volume().settings();
+        gi.spacing = runtime.gi_config.probe_spacing;
+        gi.rays_per_probe = runtime.gi_config.rays_per_probe;
+        gi.intensity = runtime.gi_config.intensity;
+        gi.emitter_intensity = runtime.gi_config.emitter_intensity;
     }
     runtime.renderer->set_frame_graph_dot(cvars::frame_graph_dot.get());
 
@@ -1484,7 +1496,9 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     };
     std::vector<InjectedKey> injected_keys;
 
-    for (auto const item: CommandLine::split(cvars::inject_keys.get(), ',')) {
+    // split() returns views into its argument, so the string has to outlive the loop.
+    auto const inject_keys_text = cvars::inject_keys.get();
+    for (auto const item: CommandLine::split(inject_keys_text, ',')) {
         auto const colon = item.find(':');
 
         if (colon == std::string_view::npos) {

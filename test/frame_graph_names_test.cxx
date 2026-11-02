@@ -11,7 +11,7 @@ using namespace frame_graph;
 TEST_SUITE("unit") {
     TEST_CASE("every use has a distinct readable name") {
         auto seen = std::vector<std::string_view>{};
-        for (auto value = 0U; value <= static_cast<unsigned>(Use::token_read); ++value) {
+        for (auto value = 0U; value <= static_cast<unsigned>(Use::acceleration_structure_read); ++value) {
             auto const name = use_name(static_cast<Use>(value));
             CHECK(name != "unknown");
             CHECK(std::ranges::find(seen, name) == seen.end());

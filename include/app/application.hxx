@@ -216,6 +216,7 @@ struct Application : Runtime {
     auto update_model_loads() -> void;
 
     auto set_entity_model(entt::registry &registry, entt::entity entity, ModelHandle model) -> void;
+    auto spawn_model_lights(Scene *scene, entt::entity model_entity, ModelHandle model) -> void;
 
     std::uint64_t scene_clean_fingerprint = 0;
 
@@ -270,6 +271,9 @@ struct Application : Runtime {
         std::array<char, 128> game{};
         std::array<char, 256> entry{};
         std::array<char, 256> scene{};
+        GiSettings gi;
+        DiagnosticsSettings diagnostics;
+        RenderSettings render;
         std::string status;
     } project_form;
     std::filesystem::path package_form_project;

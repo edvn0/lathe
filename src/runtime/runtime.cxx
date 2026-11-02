@@ -1,4 +1,5 @@
 #include "runtime/runtime.hxx"
+#include "runtime/engine_cvars.hxx"
 
 #include <volk.h>
 
@@ -296,7 +297,7 @@ auto Runtime::on_startup() -> void {
     imgui_renderer = std::make_unique<gui::ImGuiRenderer>(
             *renderer, gui::FontChoice{
                                .font_path = "assets/fonts/GoogleSansCode-Regular.ttf",
-                               .size = 12,
+                               .size = cvars::ui_font_size.get(),
                        });
     create_ui_resources();
     register_overlays();
@@ -324,11 +325,33 @@ auto Runtime::on_startup() -> void {
             warn("Could not set up planet atmospheres: {}", describe(created.error()));
         }
 
-        if (ray_tracing_poc_enabled) {
+        if (render_config.ray_traced_shadows && context.ray_query_supported) {
+            if (auto const created = renderer->ray_traced_shadows().create(*renderer); !created) {
+                warn("Could not set up ray traced shadows: {}", describe(created.error()));
+            }
+        }
+
+        if (gi_config.enabled) {
             if (!context.ray_query_supported) {
-                warn("--rt-poc needs VK_KHR_ray_query, which this device does not support");
-            } else if (auto const created = ray_tracing_poc.create(*renderer); !created) {
-                warn("Could not set up the ray tracing PoC: {}", describe(created.error()));
+                info("Probe GI off: this device does not support VK_KHR_ray_query");
+            } else if (auto const created = renderer->probe_volume().create(*renderer); !created) {
+                warn("Could not set up the probe volume: {}", describe(created.error()));
+            } else {
+                // The coarser cascade: same probe counts at four times the spacing, updated every other frame.
+                auto &far = renderer->probe_volume_far();
+                auto &near_settings = renderer->probe_volume().settings();
+                far.settings() = near_settings;
+                far.settings().spacing = near_settings.spacing * 4.0F;
+                far.settings().normal_bias = near_settings.normal_bias * 4.0F;
+                far.settings().view_bias = near_settings.view_bias * 4.0F;
+                far.settings().cascade = 1;
+                far.settings().update_interval = 2;
+                far.settings().debug_view = 0;
+                if (!gi_config.far_cascade) {
+                    // Left uncreated: the cascade is simply not there.
+                } else if (auto const far_created = far.create(*renderer); !far_created) {
+                    warn("Could not set up the far probe cascade: {}", describe(far_created.error()));
+                }
             }
         }
 
@@ -349,7 +372,6 @@ auto Runtime::on_startup() -> void {
                                       renderer->directional_light().direction,
                                       renderer->directional_light().intensity);
             }
-            ray_tracing_poc.declare(graph, frame_view, frame_projection, renderer->directional_light().direction);
             if (game && game_hooks_enabled) {
                 effect_system.declare(graph);
                 game->on_frame_graph(graph, last_delta_time);
@@ -519,10 +541,10 @@ auto Runtime::handle_event(KeyPressedEvent ev) -> bool {
                 return true;
             }
         }
-
     }
 
-    return true;
+    // Everything else goes on to the game (its handlers run later): consuming it here left a playing game with no keys.
+    return false;
 }
 
 auto Runtime::handle_event(KeyReleasedEvent ev) -> bool {

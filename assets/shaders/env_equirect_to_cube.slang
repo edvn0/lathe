@@ -1,6 +1,7 @@
 module env_equirect_to_cube;
 
 import bindless;
+import common;
 import environment;
 
 struct EnvEquirectToCubePushConstants
@@ -12,7 +13,6 @@ struct EnvEquirectToCubePushConstants
     uint size;
 };
 
-public [[vk::binding(4, 0)]] RWTexture2D<float4> storage_2d[];
 
 [vk::push_constant] EnvEquirectToCubePushConstants pc;
 

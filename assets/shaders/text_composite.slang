@@ -1,9 +1,9 @@
 module text_composite;
 
 import bindless;
+import common;
 import text_common;
 
-public [[vk::binding(4, 0)]] RWTexture2D<float4> storage_2d[];
 
 // Mirrors CompositeParams in text_renderer.cxx.
 struct CompositePushConstants

@@ -35,6 +35,13 @@ Environment variables:
 
       Default: ~/.cache/renderdoc-include, if `cargo xtask setup-renderdoc` has been run.
 
+  AFTERMATH_SDK_DIR
+      Host directory of the extracted NVIDIA Nsight Aftermath SDK (holding include/ and lib/x64/), which turns on GPU crash
+      dumps. Mounted read-only into the container at the same path; the library is opened at run time from there.
+      The SDK cannot live in the repository (download: https://developer.nvidia.com/nsight-aftermath).
+
+      Default: ~/builds/nsight-aftermath-sdk, if it exists.
+
   ASSIMP_PREFIX
       Host install prefix of a shared Assimp. Mounted read-only into the container at the same path and
       added to CMAKE_PREFIX_PATH. The image's own Assimp is never used, since the binary runs on the host.
@@ -259,6 +266,7 @@ struct Config {
     build_type: String,
     renderdoc_include_path: Option<PathBuf>,
     assimp_prefix: Option<PathBuf>,
+    aftermath_sdk_dir: Option<PathBuf>,
     cpm_cache_dir: PathBuf,
     container_home: PathBuf,
     linker: Linker,
@@ -299,11 +307,20 @@ impl Config {
             .filter(|value| !value.is_empty())
             .map(PathBuf::from);
 
+        let aftermath_sdk_dir = env::var_os("AFTERMATH_SDK_DIR")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                let default = home.join("builds/nsight-aftermath-sdk");
+                default.join("include").is_dir().then_some(default)
+            });
+
         Ok(Self {
             project_dir,
             build_type,
             renderdoc_include_path,
             assimp_prefix,
+            aftermath_sdk_dir,
             cpm_cache_dir: home.join(".cache/CPM"),
             container_home: home.join(".cache/cross-build-container-home"),
             linker: Linker::from_env()?,
@@ -340,6 +357,10 @@ impl Config {
 
         if let Some(renderdoc_include_path) = &self.renderdoc_include_path {
             println!("  renderdoc:  {}", renderdoc_include_path.display());
+        }
+
+        if let Some(aftermath_sdk_dir) = &self.aftermath_sdk_dir {
+            println!("  aftermath:  {}", aftermath_sdk_dir.display());
         }
     }
 
@@ -423,6 +444,12 @@ impl Config {
                 .arg(bind_mount(assimp_prefix, assimp_prefix, true));
         }
 
+        if let Some(aftermath_sdk_dir) = &self.aftermath_sdk_dir {
+            command
+                .arg("--mount")
+                .arg(bind_mount(aftermath_sdk_dir, aftermath_sdk_dir, true));
+        }
+
         command.arg(IMAGE);
 
         Ok(command)
@@ -479,6 +506,13 @@ impl Config {
             args.push(OsString::from(format!(
                 "-DRENDERDOC_INCLUDE_PATH={}",
                 renderdoc_include_path.display()
+            )));
+        }
+
+        if let Some(aftermath_sdk_dir) = &self.aftermath_sdk_dir {
+            args.push(OsString::from(format!(
+                "-DAFTERMATH_SDK_DIR={}",
+                aftermath_sdk_dir.display()
             )));
         }
 

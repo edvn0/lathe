@@ -261,6 +261,15 @@ namespace cvars {
                     "Textures are re-encoded and cached separately",
             .hint = "LAMBDA",
     }};
+    CVar<float> ui_font_size{{
+            .name = "ui_font_size",
+            .group = "Display",
+            .help = "Editor and in-game UI text size in pixels (default 14); read at start-up",
+            .hint = "PIXELS",
+            .default_value = 14.0F,
+            .min = 8.0F,
+            .max = 48.0F,
+    }};
 
     CVar<bool> vsync{{
             .name = "vsync",
@@ -330,19 +339,6 @@ namespace cvars {
             .group = "Diagnostics",
             .help = "Write the compiled frame graph as Graphviz whenever it changes (render with `dot -Tsvg`).",
             .hint = "FILE.dot",
-    }};
-    CVar<bool> rt_poc{{
-            .name = "rt_poc",
-            .group = "Diagnostics",
-            .help = "Trace a sphere into the scene with VK_KHR_ray_query (docs/ray-tracing.md)",
-    }};
-    CVar<std::string> rt_poc_view{{
-            .name = "rt_poc_view",
-            .group = "Diagnostics",
-            .help = "Debug view of --rt-poc: beauty, normals, distance, shadow-mask, triangle, barycentrics, "
-                    "depth-test",
-            .hint = "NAME",
-            .default_value = "beauty",
     }};
 
     CVar<std::string> script{{

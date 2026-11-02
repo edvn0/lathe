@@ -427,6 +427,51 @@ namespace stages {
             }
         }
 
+        auto draw_ray_traced_shadows(Context &context) -> void {
+            auto &shadows = context.renderer.ray_traced_shadows();
+            if (!shadows.ready()) {
+                ImGui::TextWrapped("Ray traced shadows are off: the device lacks VK_KHR_ray_query, or Project Settings turn "
+                                   "them off. The sun's shadow comes from the cascaded shadow map.");
+                return;
+            }
+            ImGui::Checkbox("Enabled##rt_shadows", &shadows.settings().enabled);
+            ImGui::Checkbox("Local lights##rt_shadows", &shadows.settings().local_lights);
+            ImGui::SetItemTooltip("Trace the shadow of the lights that cast one: the first three per pixel. The rest keep "
+                                  "the shadow atlas.");
+            ImGui::SliderFloat("Sun angular radius", &shadows.settings().sun_spread, 0.0F, 0.03F, "%.4f rad");
+            ImGui::SetItemTooltip("Half the angle of the cone of the sun's rays: the wider, the softer the shadow edges. The "
+                                  "real sun is about 0.0047 across; 0 gives hard shadows.");
+        }
+
+        auto draw_probe_gi(Context &context) -> void {
+            auto &volume = context.renderer.probe_volume();
+            if (!volume.ready()) {
+                ImGui::TextWrapped("The probe volume is off: the device lacks VK_KHR_ray_query, or Project Settings turn it off.");
+                return;
+            }
+            auto &settings = volume.settings();
+            auto rays = static_cast<int>(settings.rays_per_probe);
+            if (ImGui::SliderInt("Rays per probe", &rays, 64, static_cast<int>(ProbeVolume::max_rays_per_probe),
+                                 "%d", ImGuiSliderFlags_AlwaysClamp)) {
+                settings.rays_per_probe = static_cast<std::uint32_t>(rays);
+            }
+            ImGui::SliderFloat("Hysteresis", &settings.hysteresis, 0.8F, 0.995F);
+            ImGui::SliderFloat("Intensity", &settings.intensity, 0.0F, 4.0F);
+            ImGui::SliderFloat("Normal bias", &settings.normal_bias, 0.0F, 1.0F);
+            ImGui::SliderFloat("View bias", &settings.view_bias, 0.0F, 0.5F);
+            ImGui::SliderFloat("Emitter intensity", &settings.emitter_intensity, 0.0F, 2000.0F, "%.0f",
+                               ImGuiSliderFlags_Logarithmic);
+            auto labels = std::vector<std::string>{};
+            for (auto const name: ProbeVolume::debug_view_names) {
+                labels.emplace_back(name);
+            }
+            if (auto const picked = combo("Debug view", labels[settings.debug_view].c_str(), labels, settings.debug_view)) {
+                settings.debug_view = static_cast<std::uint32_t>(*picked);
+            }
+            ImGui::TextDisabled("%ux%ux%u probes, %.2f m apart", settings.counts[0], settings.counts[1],
+                                settings.counts[2], static_cast<double>(settings.spacing));
+        }
+
         auto draw_colour_grade(Context &context) -> void {
             auto grade = context.renderer.colour_grade_settings();
             bool dirty = false;
@@ -591,6 +636,30 @@ namespace stages {
                             renderer.set_bloom_settings(bloom);
                         },
                 .draw_settings = draw_bloom,
+        });
+
+        add(Stage{
+                .id = FlyString{"ray_traced_shadows"},
+                .title = "Ray traced shadows",
+                .passes = passes_of({"rt_shadows"}),
+                .state = [](Renderer const &renderer) {
+                    return State{.enabled = renderer.ray_traced_shadows().ready() &&
+                                            renderer.ray_traced_shadows().settings().enabled};
+                },
+                .set_enabled = [](Renderer &renderer, bool enabled) {
+                    renderer.ray_traced_shadows().settings().enabled = enabled;
+                },
+                .draw_settings = draw_ray_traced_shadows,
+        });
+
+        add(Stage{
+                .id = FlyString{"probe_gi"},
+                .title = "Probe GI",
+                .passes = passes_of({"gi_probe_trace", "gi_probe_classify", "gi_probe_blend", "gi_probe_border", "gi_far_probe_trace",
+                                    "gi_far_probe_classify", "gi_far_probe_blend", "gi_far_probe_border"}),
+                .state = [](Renderer const &renderer) { return State{.enabled = renderer.probe_volume().ready()}; },
+                .set_enabled = {},
+                .draw_settings = draw_probe_gi,
         });
 
         add(Stage{
