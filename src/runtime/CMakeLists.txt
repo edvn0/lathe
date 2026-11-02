@@ -23,6 +23,7 @@ target_link_libraries(
     engine_runtime
     PUBLIC
         engine_game
+        engine_luagame
         engine_scripting
         engine_deps
         engine_serialisation

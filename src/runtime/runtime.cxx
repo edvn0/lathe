@@ -6,6 +6,7 @@
 #include <GLFW/glfw3.h>
 
 #include <array>
+#include <algorithm>
 #include <format>
 #include <cstdint>
 #include <glm/vec2.hpp>
@@ -38,12 +39,123 @@ Runtime::Runtime(VulkanContext &ctx) noexcept :
 }
 
 auto Runtime::subscribe_game_input() -> void {
-    game->subscribe_input(InputContext{
-        .bus = event_bus,
-        .scene = [this] { return active_scene(); },
-        .playing = [this] { return is_playing; },
-        .mouse_look = [this] { return play_fullscreen || game_mouse_captured; },
-    });
+    auto const context_for_input = [this] {
+        return InputContext{
+                .bus = event_bus,
+                .scene = [this] { return active_scene(); },
+                .playing = [this] { return is_playing; },
+                .mouse_look = [this] { return play_fullscreen || game_mouse_captured; },
+        };
+    };
+
+    game->subscribe_input(context_for_input());
+
+    if (scripts) {
+        scripts->subscribe_input(context_for_input());
+    }
+}
+
+namespace {
+    // The scripted games: assets/scripts/<name>/main.lua in any data root (the project's, its mounts, the engine's).
+    auto scripted_games() -> std::vector<std::pair<std::string, std::string>> {
+        std::vector<std::pair<std::string, std::string>> found;
+        std::error_code ignored;
+
+        for (auto const &root: Paths::current().search_roots()) {
+            for (std::filesystem::directory_iterator it{root / "assets" / "scripts", ignored}, end; it != end;
+                 it.increment(ignored)) {
+                auto const name = it->path().filename().string();
+
+                if (it->is_directory(ignored) && std::filesystem::is_regular_file(it->path() / "main.lua", ignored) &&
+                    std::ranges::none_of(found, [&](auto const &entry) { return entry.first == name; })) {
+                    found.emplace_back(name, std::format("assets/scripts/{}/main.lua", name));
+                }
+            }
+        }
+
+        std::ranges::sort(found);
+
+        return found;
+    }
+}
+
+auto Runtime::game_menu_names() const -> std::vector<std::string> {
+    std::vector<std::string> names{available_games.begin(), available_games.end()};
+
+    for (auto const &[name, entry]: scripted_games()) {
+        if (std::ranges::find(names, name) == names.end()) {
+            names.push_back(name);
+        }
+    }
+
+    return names;
+}
+
+auto Runtime::setup_game(std::string_view name) const -> std::optional<GameSetup> {
+    auto const make_scripts = [this] {
+        auto scripts = std::make_unique<ScriptSystem>();
+
+        for (auto const &[module_name, opener]: native_script_modules) {
+            scripts->add_native_module(module_name, opener);
+        }
+
+        return scripts;
+    };
+
+    if (std::ranges::find(available_games, name) != available_games.end() && game_factory) {
+        auto setup = GameSetup{.game = game_factory(name)};
+
+        if (name == "lua") {
+            setup.scripts = make_scripts();
+            setup.script_entry = script_entry;
+        }
+
+        return setup;
+    }
+
+    for (auto const &[scripted_name, entry]: scripted_games()) {
+        if (scripted_name == name && game_factory) {
+            return GameSetup{.game = game_factory("empty"), .scripts = make_scripts(), .script_entry = entry};
+        }
+    }
+
+    return std::nullopt;
+}
+
+auto Runtime::populate_game() -> void {
+    game->on_populate(*source_scene, *renderer, engine_models);
+
+    if (scripts) {
+        scripts->on_populate(*source_scene, renderer.get(), &engine_models);
+    }
+}
+
+auto Runtime::wants_cursor() const -> bool {
+    return game->wants_cursor() || (scripts && scripts->wants_cursor());
+}
+
+auto Runtime::camera(float aspect_ratio) const -> CameraParams {
+    if (scripts && scripts->has_camera()) {
+        return scripts->camera(*active_scene(), aspect_ratio);
+    }
+
+    return game->camera(*active_scene(), aspect_ratio);
+}
+
+auto Runtime::behaviour_names() -> std::span<std::string const> {
+    return scripts ? scripts->behaviour_names() : game->behaviour_names();
+}
+
+auto Runtime::behaviour_schema(std::string const &name) -> ScriptSchema const * {
+    return scripts ? scripts->behaviour_schema(name) : game->behaviour_schema(name);
+}
+
+auto Runtime::reload_behaviours() -> void {
+    if (scripts) {
+        scripts->reload_behaviours();
+    } else {
+        game->reload_behaviours();
+    }
 }
 
 Runtime::~Runtime() {
@@ -53,8 +165,9 @@ Runtime::~Runtime() {
 
     shader_watcher_.stop();
 
-    // A Lua game's finalizers release effects through effect_system, which is declared after `game` and so would be
+    // A script's finalizers release effects through effect_system, which is declared after `game` and so would be
     // destroyed first.
+    scripts.reset();
     game.reset();
 }
 
@@ -64,7 +177,11 @@ auto Runtime::play() -> void {
     runtime_scene = std::make_unique<Scene>(*renderer);
     runtime_scene->physics_settings = source_scene->physics_settings;
     runtime_scene->environment = source_scene->environment;
-    game->clone_into_runtime(*source_scene, *runtime_scene);
+    if (scripts) {
+        scripts->clone_into_runtime(*source_scene, *runtime_scene);
+    } else {
+        game->clone_into_runtime(*source_scene, *runtime_scene);
+    }
 
     is_playing = true;
     active_scene()->on_scene_start();
@@ -77,7 +194,7 @@ auto Runtime::play() -> void {
     game_mouse_captured = false;
 
     if (play_fullscreen) {
-        if (!game->wants_cursor()) {
+        if (!wants_cursor()) {
             capture_mouse();
         }
         ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoKeyboard;
@@ -92,6 +209,10 @@ auto Runtime::stop() -> void {
     }
 
     game->on_play_stop(*active_scene());
+
+    if (scripts) {
+        scripts->on_play_stop(*active_scene());
+    }
     active_scene()->detach_debug_renderer();
     debug_renderer->clear_lines();
     active_scene()->on_scene_stop();
@@ -244,7 +365,15 @@ auto Runtime::update(float delta_time) -> void {
         game->on_cursor_position(*active_scene(), cursor_over_game());
     }
 
+    if (scripts && scripts->wants_cursor()) {
+        scripts->on_cursor_position(*active_scene(), cursor_over_game());
+    }
+
     game->on_update(*active_scene(), delta_time);
+
+    if (scripts) {
+        scripts->on_update(*active_scene(), delta_time);
+    }
     systems::lifetime(active_scene()->get_registry(), *active_scene()->physics_world, delta_time);
 }
 
@@ -253,6 +382,10 @@ auto Runtime::on_ui(std::uint32_t frame_index) -> void {
 
     if (is_playing && play_fullscreen && player_mode && game && game_hooks_enabled) {
         game->on_ui(*active_scene(), *renderer);
+
+        if (scripts) {
+            scripts->on_ui(*active_scene(), *renderer);
+        }
     }
 
     gui::clear_toast_anchor();
@@ -394,7 +527,7 @@ auto Runtime::on_startup() -> void {
             }
         });
 
-        game->on_populate(*source_scene, *renderer, engine_models);
+        populate_game();
         on_source_scene_replaced();
 
         create_terrain();
@@ -431,9 +564,9 @@ auto Runtime::switch_game(std::string name) -> void {
             return;
         }
 
-        auto next = game_factory ? game_factory(name) : nullptr;
+        auto next = setup_game(name);
 
-        if (next == nullptr) {
+        if (!next) {
             scene_status = std::format("Unknown game '{}'.", name);
             return;
         }
@@ -454,22 +587,30 @@ auto Runtime::switch_game(std::string name) -> void {
         }
 
         // The old game's finalizers release effects through effect_system, so it goes before anything new binds.
+        scripts.reset();
         game.reset();
-        game = std::move(next);
+        game = std::move(next->game);
+        scripts = std::move(next->scripts);
         subscribe_game_input();
         game_name = name;
 
-        game->attach_host(GameHost{
+        auto const host = GameHost{
                 .player_mode = player_mode,
                 .request_exit = [window = context.window] { glfwSetWindowShouldClose(window, GLFW_TRUE); },
-                .script_entry = script_entry,
+                .script_entry = next->script_entry,
                 .effects = &effect_system,
                 .text = text_renderer.get(),
-        });
+        };
+
+        game->attach_host(host);
+
+        if (scripts) {
+            scripts->attach_host(host);
+        }
 
         scene_path.clear();
         scene_pack.reset();
-        game->on_populate(*source_scene, *renderer, engine_models);
+        populate_game();
         on_source_scene_replaced();
         create_terrain();
 

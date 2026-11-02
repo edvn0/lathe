@@ -192,9 +192,9 @@ auto Application::draw_main_menu_bar() -> void {
 
         ImGui::BeginDisabled(busy);
         if (ImGui::BeginMenu("Load Game")) {
-            for (auto const name: available_games) {
-                if (ImGui::MenuItem(std::string{name}.c_str(), nullptr, name == game_name)) {
-                    request_switch_game(std::string{name});
+            for (auto const &name: game_menu_names()) {
+                if (ImGui::MenuItem(name.c_str(), nullptr, name == game_name)) {
+                    request_switch_game(name);
                 }
             }
             ImGui::EndMenu();

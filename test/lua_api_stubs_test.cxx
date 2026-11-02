@@ -6,7 +6,7 @@
 #include <set>
 #include <string>
 
-#include "luagame/lua_game.hxx"
+#include "luagame/script_system.hxx"
 #include "luagame/lua_game_api.hxx"
 #include "luagame/lua_http.hxx"
 #include "scripting/lua_runtime.hxx"

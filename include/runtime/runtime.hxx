@@ -20,6 +20,7 @@
 #include "assets/file_change_watcher.hxx"
 #include "core/project_file.hxx"
 #include "game/game.hxx"
+#include "luagame/script_system.hxx"
 #include "gpu/context.hxx"
 #include "rendering/effect_system.hxx"
 #include "rendering/engine_models.hxx"
@@ -80,6 +81,19 @@ struct Runtime {
 
     std::unique_ptr<IGame> game;
 
+    // The scripting component: the entry script drives the scene beside (or instead of) the native game. Null for a game
+    // that has no script. Declared with `game`, which it is torn down with (finalizers release effects).
+    std::unique_ptr<ScriptSystem> scripts;
+
+    // What the game and its script do in the lifecycle's places; the callers (the editor, the benchmark) go through these
+    // so a script is called wherever the game is.
+    auto populate_game() -> void;
+    [[nodiscard]] auto wants_cursor() const -> bool;
+    [[nodiscard]] auto camera(float aspect_ratio) const -> CameraParams;
+    [[nodiscard]] auto behaviour_names() -> std::span<std::string const>;
+    [[nodiscard]] auto behaviour_schema(std::string const &name) -> ScriptSchema const *;
+    auto reload_behaviours() -> void;
+
     std::string game_name;
     std::string script_entry;
 
@@ -109,6 +123,20 @@ struct Runtime {
 
     // What switch_game can load; set by run_engine from the executable's game_names()/create_game().
     std::function<std::unique_ptr<IGame>(std::string_view)> game_factory;
+    // The native Lua modules every script can require (the executable's, see native_script_modules()).
+    std::vector<std::pair<std::string, lua_CFunction>> native_script_modules;
+
+    // What a game name stands for: a native game ("lua" among them, which runs the configured entry script), or a scripted
+    // game, any assets/scripts/<name>/main.lua found in the data roots (an EmptyGame with that script on top).
+    struct GameSetup {
+        std::unique_ptr<IGame> game;
+        std::unique_ptr<ScriptSystem> scripts;
+        // The entry script the scripts run, empty for the configured one.
+        std::string script_entry;
+    };
+    [[nodiscard]] auto setup_game(std::string_view name) const -> std::optional<GameSetup>;
+    // The names of the games the Game menu offers: the native ones, then the scripted ones.
+    [[nodiscard]] auto game_menu_names() const -> std::vector<std::string>;
     std::span<std::string_view const> available_games;
     auto create_terrain() -> void;
 

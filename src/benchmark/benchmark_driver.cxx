@@ -122,7 +122,7 @@ auto BenchmarkDriver::start_case(Application &application) -> void {
         application.game_hooks_enabled = true;
 
         if (options_.mode == BenchmarkMode::suite) {
-            application.game->on_populate(*application.source_scene, *application.renderer, application.engine_models);
+            application.populate_game();
             application.mark_source_scene_clean();
 
             release_scenario_materials(application);

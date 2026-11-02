@@ -902,6 +902,10 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
     if (game && game_hooks_enabled && panels.game) {
         game->on_ui(*active_scene(), *renderer);
+
+        if (scripts) {
+            scripts->on_ui(*active_scene(), *renderer);
+        }
     }
 #if LATHE_TRACK_MEMORY
     panel("Memory", panels.memory, [] { on_memory_ui(); });
@@ -2254,7 +2258,7 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         });
         section.operator()<Components::Behaviour>("Behaviour", [&](Components::Behaviour &script) {
             bool changed = false;
-            auto const names = game->behaviour_names();
+            auto const names = behaviour_names();
 
             if (ImGui::BeginCombo("Script", script.script.empty() ? "(none)" : script.script.c_str())) {
                 for (auto const &name: names) {
@@ -2273,10 +2277,10 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
 
             ImGui::SameLine();
             if (ImGui::SmallButton("Reload")) {
-                game->reload_behaviours();
+                reload_behaviours();
             }
 
-            auto const *const schema = game->behaviour_schema(script.script);
+            auto const *const schema = behaviour_schema(script.script);
 
             if (schema == nullptr) {
                 ImGui::TextColored(ImVec4(1.0F, 0.45F, 0.40F, 1.0F), "No behaviour named '%s'.",
@@ -2533,9 +2537,9 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 ImGui::EndMenu();
             }
 
-            if (!registry.all_of<Components::Behaviour>(selected_entity) && !game->behaviour_names().empty() &&
+            if (!registry.all_of<Components::Behaviour>(selected_entity) && !behaviour_names().empty() &&
                 ImGui::BeginMenu("Behaviour")) {
-                for (auto const &name: game->behaviour_names()) {
+                for (auto const &name: behaviour_names()) {
                     if (ImGui::MenuItem(name.c_str())) {
                         registry.emplace<Components::Behaviour>(selected_entity, Components::Behaviour{.script = name});
                     }
