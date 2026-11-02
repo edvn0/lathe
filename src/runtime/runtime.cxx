@@ -104,7 +104,7 @@ auto Runtime::wants_cursor() const -> bool {
     return game->wants_cursor() || (scripts && scripts->wants_cursor());
 }
 
-auto Runtime::camera(float aspect_ratio) const -> CameraParams {
+auto Runtime::game_camera(float aspect_ratio) const -> CameraParams {
     if (scripts && scripts->has_camera()) {
         return scripts->camera(*active_scene(), aspect_ratio);
     }
