@@ -76,6 +76,8 @@ struct Model {
     std::vector<ModelNode> nodes;
     std::vector<std::uint32_t> scene_roots;
     std::vector<MaterialHandle> materials;
+    // Parallel to `materials`: the importer's name for each, empty when the file gave none.
+    std::vector<std::string> material_names;
 
     glm::vec3 bounds_min{-0.5F};
     glm::vec3 bounds_max{0.5F};
@@ -130,6 +132,7 @@ struct ModelCpuImageSource {
 };
 
 struct ModelCpuMaterial {
+    std::string name;
     glm::vec4 base_colour_factor{1.0F};
     glm::vec3 emissive_factor{0.0F};
     float emissive_strength = 1.0F;
@@ -227,6 +230,7 @@ struct ModelGpuUpload {
     std::vector<ImageHandle> image_handles;
 
     std::vector<MaterialHandle> materials;
+    std::vector<std::string> material_names;
     std::vector<ModelMesh> meshes;
 
     std::size_t material_cursor = 0;

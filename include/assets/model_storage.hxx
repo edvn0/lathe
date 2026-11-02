@@ -34,6 +34,7 @@ struct ModelSlotData {
 
     // The materials the model was created with, indexed like the parsed model's `material_index`.
     std::vector<MaterialHandle> source_materials;
+    std::vector<std::string> source_material_names;
 
     // The model's triangles for ray queries, when the streamer was asked to collect them (the editor does).
     std::shared_ptr<ModelPickGeometry const> pick_geometry;

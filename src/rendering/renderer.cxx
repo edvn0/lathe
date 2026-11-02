@@ -2471,6 +2471,7 @@ auto Renderer::create_model_common(
             .lights = model.lights,
             .animation = model.animation,
             .source_materials = model.materials,
+            .source_material_names = model.material_names,
             .skin_inflate = model.skin_inflate,
     });
 
@@ -2635,6 +2636,21 @@ auto Renderer::model_materials(ModelHandle model) const -> std::vector<MaterialH
     }
 
     return materials;
+}
+
+auto Renderer::model_material_name(ModelHandle model, MaterialHandle material) const -> std::string_view {
+    auto const *slot = model_slot(model);
+
+    if (slot == nullptr) {
+        return {};
+    }
+
+    auto const it = std::ranges::find(slot->source_materials, material);
+    auto const index = static_cast<std::size_t>(it - slot->source_materials.begin());
+
+    return it != slot->source_materials.end() && index < slot->source_material_names.size()
+                   ? std::string_view{slot->source_material_names[index]}
+                   : std::string_view{};
 }
 
 auto Renderer::model_source_material(ModelHandle model, std::uint32_t material_index) const -> MaterialHandle {

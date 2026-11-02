@@ -443,6 +443,7 @@ namespace {
         aiString name_string;
         material.Get(AI_MATKEY_NAME, name_string);
         auto const name = name_string.length != 0 ? std::string{name_string.C_Str()} : std::format("material_{}", index);
+        result.name = name;
 
         aiColor4D colour{1.0F, 1.0F, 1.0F, 1.0F};
         if (material.Get(AI_MATKEY_BASE_COLOR, colour) != aiReturn_SUCCESS) {
