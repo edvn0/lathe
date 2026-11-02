@@ -17,6 +17,7 @@
 #include "core/logger.hxx"
 #include "core/paths.hxx"
 #include "imgui.h"
+#include "gpu/performance_tier.hxx"
 #include "physics/physics_world.hxx"
 #include "rendering/debug_renderer.hxx"
 #include "rendering/file_browser.hxx"
@@ -325,17 +326,23 @@ auto Runtime::on_startup() -> void {
             warn("Could not set up planet atmospheres: {}", describe(created.error()));
         }
 
+        // The GPU class that "auto" quality settings follow: detected, unless the project names one.
+        auto const detected_tier = performance_tier::detect(context.device_type, context.device_local_bytes);
+        auto const tier = performance_tier::parse(render_config.performance_tier).value_or(detected_tier);
+        auto const tier_profile = performance_tier::profile(tier);
+        info("Performance tier: {} ({}, detected {})", performance_tier::name(tier),
+             render_config.performance_tier == "auto" ? "auto" : "set by the project", performance_tier::name(detected_tier));
+
         if (render_config.ray_traced_shadows && context.ray_query_supported) {
             if (auto const created = renderer->ray_traced_shadows().create(*renderer); !created) {
                 warn("Could not set up ray traced shadows: {}", describe(created.error()));
             } else {
                 auto const &resolution = render_config.ray_traced_shadow_resolution;
-                auto const discrete = context.device_type == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ||
-                                      context.device_type == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU;
                 renderer->ray_traced_shadows().settings().resolution_shift =
-                        resolution == "quarter" || (resolution == "auto" && !discrete) ? 2U
-                        : resolution == "half"                                          ? 1U
-                                                                                        : 0U;
+                        resolution == "quarter" ? 2U
+                        : resolution == "half"  ? 1U
+                        : resolution == "full"  ? 0U
+                                                : tier_profile.rt_shadow_resolution_shift;
             }
         }
 
@@ -345,7 +352,7 @@ auto Runtime::on_startup() -> void {
             } else if (auto const created = renderer->probe_volume().create(*renderer); !created) {
                 warn("Could not set up the probe volume: {}", describe(created.error()));
             } else {
-                // The coarser cascade: same probe counts at four times the spacing, updated every other frame.
+                // The coarser cascade: same probe counts at four times the spacing, updated every few frames.
                 auto &far = renderer->probe_volume_far();
                 auto &near_settings = renderer->probe_volume().settings();
                 far.settings() = near_settings;
@@ -353,7 +360,8 @@ auto Runtime::on_startup() -> void {
                 far.settings().normal_bias = near_settings.normal_bias * 4.0F;
                 far.settings().view_bias = near_settings.view_bias * 4.0F;
                 far.settings().cascade = 1;
-                far.settings().update_interval = 2;
+                far.settings().update_interval = gi_config.far_update_interval != 0 ? gi_config.far_update_interval
+                                                                                    : tier_profile.far_cascade_update_interval;
                 far.settings().debug_view = 0;
                 if (!gi_config.far_cascade) {
                     // Left uncreated: the cascade is simply not there.

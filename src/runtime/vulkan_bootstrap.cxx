@@ -710,6 +710,13 @@ namespace {
         VkPhysicalDeviceProperties properties{};
         vkGetPhysicalDeviceProperties(context.physical_device, &properties);
         context.device_type = properties.deviceType;
+        VkPhysicalDeviceMemoryProperties memory{};
+        vkGetPhysicalDeviceMemoryProperties(context.physical_device, &memory);
+        for (auto i = 0U; i < memory.memoryHeapCount; ++i) {
+            if ((memory.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0U) {
+                context.device_local_bytes = std::max<std::uint64_t>(context.device_local_bytes, memory.memoryHeaps[i].size);
+            }
+        }
         info("Selected physical device: {} (type {})", properties.deviceName, static_cast<int>(properties.deviceType));
 
         context.supported_sample_counts =

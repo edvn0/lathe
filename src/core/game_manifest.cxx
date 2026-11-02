@@ -55,6 +55,9 @@ namespace {
         if (key == "enabled") {
             return flag(gi.enabled);
         }
+        if (key == "far_update_interval") {
+            return number(gi.far_update_interval, 0, 16);
+        }
         if (key == "far_cascade") {
             return flag(gi.far_cascade);
         }
@@ -92,6 +95,14 @@ namespace {
                 return false;
             }
             render.ray_traced_shadows = bare == "true";
+            return true;
+        }
+        if (key == "performance_tier") {
+            if (bare != "auto" && bare != "low" && bare != "medium" && bare != "high") {
+                error = "'performance_tier' must be \"auto\", \"low\", \"medium\" or \"high\"";
+                return false;
+            }
+            render.performance_tier = std::string{bare};
             return true;
         }
         if (key == "ray_traced_shadow_resolution") {
@@ -215,14 +226,14 @@ auto GameManifest::to_text() const -> std::string {
 
     if (gi != GiSettings{}) {
         text += std::format("\n[gi]\nenabled = {}\nrays_per_probe = {}\nprobe_spacing = {}\nintensity = {}\n"
-                            "emitter_intensity = {}\nfar_cascade = {}\nsynthesize_lights = \"{}\"\n",
+                            "emitter_intensity = {}\nfar_cascade = {}\nfar_update_interval = {}\nsynthesize_lights = \"{}\"\n",
                             gi.enabled, gi.rays_per_probe, gi.probe_spacing, gi.intensity, gi.emitter_intensity,
-                            gi.far_cascade, gi.synthesize_lights);
+                            gi.far_cascade, gi.far_update_interval, gi.synthesize_lights);
     }
 
     if (render != RenderSettings{}) {
-        text += std::format("\n[render]\nray_traced_shadows = {}\nray_traced_shadow_resolution = \"{}\"\n",
-                            render.ray_traced_shadows, render.ray_traced_shadow_resolution);
+        text += std::format("\n[render]\nray_traced_shadows = {}\nperformance_tier = \"{}\"\nray_traced_shadow_resolution = \"{}\"\n",
+                            render.ray_traced_shadows, render.performance_tier, render.ray_traced_shadow_resolution);
     }
 
     if (diagnostics != DiagnosticsSettings{}) {

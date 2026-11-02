@@ -26,7 +26,7 @@ cascades (`ray_traced_sun_shadow` in `forward_geom.slang`), averaging the pixel 
   only pixels where they disagree, the penumbra, trace two more, so most pixels cost two rays. 0.8 ms at 1280x720 in the
   town stress scene.
 - **Resolution.** The mask can be traced at half or quarter of the screen size: `[render] ray_traced_shadow_resolution =
-  "auto" | "full" | "half" | "quarter"` (default `auto`: full on a discrete GPU, quarter on an integrated one) (Edit > Project Settings > Rendering, applied the next time the project opens; the frame graph
+  "auto" | "full" | "half" | "quarter"` (default `auto`: follows the performance tier, `docs/performance-tiers.md`) (Edit > Project Settings > Rendering, applied the next time the project opens; the frame graph
   panel's "Ray traced shadows" stage switches it while the editor runs). Each mask pixel traces from one pixel of the block
   it covers, a different one every frame, and the forward pass reads the mask at its own pixel's block, so edges get softer
   and can leak a little at silhouettes. Half costs about a quarter of full.
