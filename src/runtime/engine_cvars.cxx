@@ -349,12 +349,6 @@ namespace cvars {
             .hint = "FILE.dot",
     }};
 
-    CVar<std::string> script{{
-            .name = "script",
-            .group = "Game",
-            .help = "Entry script of a Lua game (--game lua), relative to the data directory",
-            .hint = "FILE.lua",
-    }};
     CVar<bool> player{{
             .name = "player",
             .group = "Game",

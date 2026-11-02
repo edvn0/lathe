@@ -14,6 +14,8 @@
 #include <glm/trigonometric.hpp>
 #include <imgui.h>
 
+#include "assets/file_change_queue.hxx"
+#include "assets/file_change_watcher.hxx"
 #include "luagame/lua_game_api.hxx"
 #include "luagame/lua_http.hxx"
 #include "core/logger.hxx"
@@ -49,14 +51,22 @@ namespace {
 }
 
 struct ScriptSystem::Impl {
+    // One script: its own Lua state, so its globals (its callbacks among them) are its own. The first instance also runs
+    // the behaviours (assets/scripts/behaviours), and exists even when the project has no script.
+    struct Instance {
+        std::string path;
+        std::unique_ptr<LuaRuntime> runtime;
+        // The `http` library scripts get; requests belong to one Lua state.
+        LuaHttp http;
+    };
+
     GameHost host;
     LuaGameHost bindings;
     std::vector<std::pair<std::string, lua_CFunction>> native_modules;
-    std::string default_entry_script;
 
-    // The `http` library scripts get; requests belong to one Lua state, so it is reset when the state is replaced.
-    LuaHttp http;
-    std::unique_ptr<LuaRuntime> runtime;
+    std::vector<std::unique_ptr<Instance>> instances;
+    // The instance whose on_camera the game camera comes from, found when asked.
+    mutable Instance *camera_instance = nullptr;
 
     std::string fatal_error;
 
@@ -65,10 +75,28 @@ struct ScriptSystem::Impl {
     mutable CameraParams last_camera{};
     mutable bool have_camera = false;
 
+    // Script files changing on disk (editors save in several steps; the queue waits for quiet).
+    FileChangeQueue changes;
+    FileChangeWatcher watcher;
+
     auto call(char const *name, std::span<double const> numbers = {}) -> void {
-        if (runtime) {
-            static_cast<void>(runtime->call(name, numbers));
+        for (auto const &instance: instances) {
+            static_cast<void>(instance->runtime->call(name, numbers));
         }
+    }
+
+    auto first_error() const -> std::string {
+        if (!fatal_error.empty()) {
+            return fatal_error;
+        }
+
+        for (auto const &instance: instances) {
+            if (!instance->runtime->last_error().empty()) {
+                return instance->runtime->last_error();
+            }
+        }
+
+        return bindings.components ? bindings.components->last_error() : std::string{};
     }
 };
 
@@ -80,7 +108,10 @@ auto ScriptSystem::add_native_module(std::string name, lua_CFunction opener) -> 
     impl_->native_modules.emplace_back(std::move(name), opener);
 }
 
-auto ScriptSystem::set_default_entry(std::string entry) -> void { impl_->default_entry_script = std::move(entry); }
+auto ScriptSystem::set_scripts(std::vector<std::string> scripts) -> void {
+    impl_->host.scripts = scripts;
+    impl_->bindings.host.scripts = std::move(scripts);
+}
 
 auto ScriptSystem::attach_host(GameHost host) -> void {
     impl_->host = std::move(host);
@@ -103,58 +134,99 @@ auto ScriptSystem::on_populate(Scene &scene, Renderer *renderer, EngineModels co
     self.fatal_error.clear();
 
     self.bindings.components.reset();
-    self.http.reset();
-    self.runtime.reset();
+    self.camera_instance = nullptr;
+    self.watcher.stop();
+    self.instances.clear();
 
-    auto created = LuaRuntime::create();
+    // The scripts to run: the project's, or none (the behaviours still need a Lua state).
+    auto const &paths = self.host.scripts;
 
-    if (!created) {
-        self.fatal_error = created.error();
-        error("[lua] {}", self.fatal_error);
+    auto const make_instance = [&](std::string const &path) -> Impl::Instance * {
+        auto created = LuaRuntime::create();
 
+        if (!created) {
+            self.fatal_error = created.error();
+            error("[lua] {}", self.fatal_error);
+
+            return nullptr;
+        }
+
+        auto instance = std::make_unique<Impl::Instance>();
+
+        instance->path = path;
+        instance->runtime = std::make_unique<LuaRuntime>(std::move(*created));
+        instance->runtime->set_host(&self.bindings);
+        instance->runtime->set_source_loader([](std::string const &module_path) -> std::optional<std::string> {
+            return read_data_file("assets/scripts/" + module_path + ".lua");
+        });
+
+        for (auto const &[name, opener]: self.native_modules) {
+            instance->runtime->register_native_module(name, opener);
+        }
+
+        open_lua_game_api(*instance->runtime);
+        instance->http.open(*instance->runtime);
+
+        self.instances.push_back(std::move(instance));
+
+        return self.instances.back().get();
+    };
+
+    if (paths.empty()) {
+        make_instance({});
+    }
+
+    for (auto const &path: paths) {
+        make_instance(path);
+    }
+
+    if (self.instances.empty()) {
         return;
     }
 
-    self.runtime = std::make_unique<LuaRuntime>(std::move(*created));
-    self.runtime->set_host(&self.bindings);
-    self.runtime->set_source_loader([](std::string const &module_path) -> std::optional<std::string> {
-        return read_data_file("assets/scripts/" + module_path + ".lua");
-    });
-
-    for (auto const &[name, opener]: self.native_modules) {
-        self.runtime->register_native_module(name, opener);
-    }
-
-    open_lua_game_api(*self.runtime);
-    self.http.open(*self.runtime);
-
     self.bindings.components = std::make_unique<BehaviourSystem>(
-            *self.runtime, self.bindings, [](std::string const &name) {
+            *self.instances.front()->runtime, self.bindings, [](std::string const &name) {
                 return read_data_file("assets/scripts/behaviours/" + name + ".lua");
             });
 
-    auto const entry = !self.host.script_entry.empty()       ? self.host.script_entry
-                       : !self.default_entry_script.empty() ? self.default_entry_script
-                                                            : std::string{default_entry};
-    auto const source = read_data_file(entry);
+    for (auto const &instance: self.instances) {
+        if (instance->path.empty()) {
+            continue;
+        }
 
-    if (!source) {
-        self.fatal_error = "the entry script '" + entry + "' was not found in the data directory or a mount";
-        error("[lua] {}", self.fatal_error);
+        auto const source = read_data_file(instance->path);
 
-        return;
+        if (!source) {
+            self.fatal_error = "the script '" + instance->path + "' was not found in the data directory or a mount";
+            error("[lua] {}", self.fatal_error);
+
+            continue;
+        }
+
+        info("[lua] Loading '{}'", instance->path);
+
+        if (auto const loaded = instance->runtime->run_main(instance->path, *source); !loaded) {
+            self.fatal_error = instance->path + ": " + loaded.error();
+            error("[lua] {}", self.fatal_error);
+        }
     }
 
-    info("[lua] Loading '{}'", entry);
+    // Reload when a script, or a module one requires, changes: every data root's assets/scripts directory.
+    auto const directories = Paths::current().data_directories("assets/scripts");
 
-    if (auto const loaded = self.runtime->run_main(entry, *source); !loaded) {
-        self.fatal_error = loaded.error();
-        error("[lua] {}", self.fatal_error);
-
-        return;
+    if (!self.host.player_mode && !directories.empty() && !self.watcher.start(self.changes, directories)) {
+        warn("[lua] could not watch the scripts for changes; they will not reload on save");
     }
 
-    self.call("on_populate");
+    for (auto const &instance: self.instances) {
+        static_cast<void>(instance->runtime->call("on_populate"));
+    }
+}
+
+auto ScriptSystem::poll_changes() -> bool {
+    auto const changed = impl_->changes.drain();
+
+    return std::ranges::any_of(changed, [](std::filesystem::path const &path) { return path.extension() == ".lua"; });
 }
 
 auto ScriptSystem::on_update(Scene &scene, float delta_time) -> void {
@@ -170,8 +242,8 @@ auto ScriptSystem::on_update(Scene &scene, float delta_time) -> void {
     update_lua_game_physics(self.bindings);
 
     // Finished http requests call their on_done before the frame's on_update sees the results.
-    if (self.runtime) {
-        self.http.update(*self.runtime);
+    for (auto const &instance: self.instances) {
+        instance->http.update(*instance->runtime);
     }
 
     std::array const arguments{static_cast<double>(delta_time)};
@@ -260,7 +332,9 @@ auto ScriptSystem::on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent
     self.call("on_mouse_button", arguments);
 }
 
-auto ScriptSystem::wants_cursor() const -> bool { return impl_->runtime && impl_->runtime->callback_flag("wants_cursor"); }
+auto ScriptSystem::wants_cursor() const -> bool {
+    return std::ranges::any_of(impl_->instances, [](auto const &instance) { return instance->runtime->callback_flag("wants_cursor"); });
+}
 
 auto ScriptSystem::on_cursor_position(Scene &scene, CursorPositionEvent const &event) -> void {
     auto &self = *impl_;
@@ -284,13 +358,7 @@ auto ScriptSystem::on_ui(Scene &scene, Renderer &renderer) -> void {
 
     self.call("on_ui");
 
-    auto error_text = !self.fatal_error.empty() ? self.fatal_error
-                      : self.runtime            ? self.runtime->last_error()
-                                                : std::string{};
-
-    if (error_text.empty() && self.bindings.components) {
-        error_text = self.bindings.components->last_error();
-    }
+    auto const error_text = self.first_error();
 
     if (error_text.empty()) {
         return;
@@ -311,27 +379,36 @@ auto ScriptSystem::on_ui(Scene &scene, Renderer &renderer) -> void {
     ImGui::PopStyleColor();
 }
 
+namespace {
+    // `on_camera` is the callback of a script that defines global functions: there `camera` is the engine's library.
+    auto camera_callback_of(LuaRuntime const &runtime) -> char const * {
+        if (runtime.has_callback("on_camera")) {
+            return "on_camera";
+        }
+
+        return runtime.has_callback("camera") ? "camera" : nullptr;
+    }
+}
+
 auto ScriptSystem::has_camera() const -> bool {
     auto const &self = *impl_;
 
-    return self.runtime && (self.runtime->has_callback("on_camera") || self.runtime->has_callback("camera"));
-}
+    self.camera_instance = nullptr;
 
-auto ScriptSystem::ok() const -> bool { return impl_->runtime && impl_->fatal_error.empty() && impl_->runtime->last_error().empty(); }
+    for (auto const &instance: self.instances) {
+        if (camera_callback_of(*instance->runtime) != nullptr) {
+            self.camera_instance = instance.get();
 
-auto ScriptSystem::error_text() const -> std::string {
-    auto const &self = *impl_;
-
-    if (!self.fatal_error.empty()) {
-        return self.fatal_error;
+            return true;
+        }
     }
 
-    if (self.runtime && !self.runtime->last_error().empty()) {
-        return self.runtime->last_error();
-    }
-
-    return self.bindings.components ? self.bindings.components->last_error() : std::string{};
+    return false;
 }
+
+auto ScriptSystem::ok() const -> bool { return !impl_->instances.empty() && impl_->first_error().empty(); }
+
+auto ScriptSystem::error_text() const -> std::string { return impl_->first_error(); }
 
 auto ScriptSystem::camera(Scene const & , float aspect_ratio) const -> CameraParams {
     auto &self = *impl_;
@@ -344,14 +421,13 @@ auto ScriptSystem::camera(Scene const & , float aspect_ratio) const -> CameraPar
     glm::vec3 up{0.0F, 1.0F, 0.0F};
     float ortho_height = 0.0F;
 
-    // `on_camera` is the callback of a script that defines global functions: there `camera` is the engine's library.
-    auto const *const camera_callback = self.runtime && self.runtime->has_callback("on_camera") ? "on_camera" : "camera";
+    auto *const camera_runtime = has_camera() ? self.camera_instance->runtime.get() : nullptr;
 
-    if (self.runtime && self.runtime->has_callback(camera_callback)) {
+    if (camera_runtime != nullptr) {
         std::array const arguments{static_cast<double>(aspect_ratio)};
 
-        if (self.runtime->call(camera_callback, arguments, 1).ok) {
-            auto *const state = self.runtime->state();
+        if (camera_runtime->call(camera_callback_of(*camera_runtime), arguments, 1).ok) {
+            auto *const state = camera_runtime->state();
             auto const table = lua_gettop(state);
 
             if (lua_istable(state, table)) {
@@ -369,7 +445,7 @@ auto ScriptSystem::camera(Scene const & , float aspect_ratio) const -> CameraPar
                 far_clip = static_cast<float>(lua_field_number(state, table, "far", far_clip));
             }
 
-            self.runtime->pop(1);
+            camera_runtime->pop(1);
         }
     }
 

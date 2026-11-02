@@ -160,12 +160,12 @@ enum Task {
         #[arg(long)]
         out: Option<PathBuf>,
 
-        /// The engine game to run, when it differs from the package name (default: the package name). A Lua game is
-        /// `--engine-game lua --script assets/scripts/<game>/main.lua`.
+        /// The engine game to run, when it differs from the package name (default: the package name). A scripted game
+        /// is a native game (usually `empty`) plus `--script assets/scripts/<game>/main.lua`.
         #[arg(long)]
         engine_game: Option<String>,
 
-        /// The entry script of a Lua game, relative to the data directory.
+        /// A script the game runs (a Lua game), relative to the data directory.
         #[arg(long)]
         script: Option<String>,
 
@@ -792,8 +792,20 @@ impl Config {
             .args(["--game", engine_game, "--player", "--exit-after-frames"])
             .arg(frames.to_string());
 
+        // A script is part of a project: record through a throwaway one that mounts the build directory, where the
+        // script and the engine's assets are.
+        let record_project = std::env::temp_dir().join(format!("lathe-record-{}", std::process::id()));
+
         if let Some(script) = script {
-            recording.args(["--script", script]);
+            fs::create_dir_all(&record_project)?;
+            fs::write(
+                record_project.join("lathe.project"),
+                format!(
+                    "name = \"{game}\"\ntitle = \"{game}\"\nmount = \"{}\"\nscript = \"{script}\"\n",
+                    bin_dir.display()
+                ),
+            )?;
+            recording.args(["--project"]).arg(&record_project);
         }
 
         if let Some(keys) = inject_keys {
@@ -808,6 +820,8 @@ impl Config {
                 .arg(&assets),
         )
         .context("the recording run failed (it needs a GPU and a display)")?;
+
+        let _ = fs::remove_dir_all(&record_project);
 
         let list = fs::read_to_string(&assets)
             .with_context(|| format!("failed to read {}", assets.display()))?;
@@ -858,7 +872,7 @@ impl Config {
         );
 
         if let Some(script) = script {
-            manifest.push_str(&format!("entry = \"{script}\"\n"));
+            manifest.push_str(&format!("script = \"{script}\"\n"));
         }
 
         fs::write(data.join("game.toml"), manifest)?;

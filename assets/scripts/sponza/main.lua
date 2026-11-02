@@ -1,5 +1,5 @@
 -- Intel's Sponza (Main) from a glb on disk, in a bright procedural sky.
--- Started with --game=lua --script=assets/scripts/sponza/main.lua [--player]; saved as assets/scenes/sponza.lbf.
+-- Started with lathe --project samples/sponza [--player]; saved as assets/scenes/sponza.lbf.
 
 local MODEL = "/home/edwin/Assets/Meshes/main_sponza.glb"
 

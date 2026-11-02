@@ -1,5 +1,5 @@
 -- The Bistro exterior at night (no sun, no ambient): what the emissive lamps, lanterns and string lights light by themselves.
---   lathe --game=lua --script=assets/scripts/gi_test/bistro_night.lua --player
+--   lathe --project samples/gi_bistro_night --player
 -- Shots advance every SHOT_FRAMES (200) frames; screenshot at frames 190, 390, 590, 790 for shots 1 to 4.
 
 local MODEL = "/home/edwin/Downloads/Bistro_v5_2/BistroExterior.glb"

@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <format>
+#include <fstream>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "core/logger.hxx"
@@ -64,14 +66,36 @@ auto Application::create_project() -> bool {
         return false;
     }
 
-    std::filesystem::create_directories(root / "assets", error);
+    std::filesystem::create_directories(root / "assets" / "scripts", error);
 
     if (error) {
         new_project_status = std::format("Could not create '{}': {}", root.string(), error.message());
         return false;
     }
 
-    ProjectFile const created{.manifest = {.name = name, .title = name, .game = "empty", .version = "0.1.0"}, .root = root};
+    // A starter script, so there is something to edit: the engine reloads it whenever it is saved.
+    constexpr auto starter_script = std::string_view{R"(-- This project's script. Edit it in any editor: the engine reloads it when you save.
+function on_populate()
+    -- Runs when the script loads, and again on every reload.
+    -- local box = scene.spawn("box")
+    -- box:set_model(assets.cube())
+end
+
+function on_update(dt)
+    -- Runs every frame while the game plays.
+end
+)"};
+
+    if (auto script = std::ofstream{root / "assets" / "scripts" / "main.lua"}; script) {
+        script << starter_script;
+    }
+
+    ProjectFile const created{.manifest = {.name = name,
+                                           .title = name,
+                                           .game = "empty",
+                                           .version = "0.1.0",
+                                           .scripts = {"assets/scripts/main.lua"}},
+                              .root = root};
 
     if (auto const saved = created.save(); !saved) {
         new_project_status = saved.error();

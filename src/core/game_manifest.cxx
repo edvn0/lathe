@@ -199,8 +199,9 @@ auto GameManifest::load(std::filesystem::path const &path, bool require_game) ->
             manifest.game = value;
         } else if (key == "version") {
             manifest.version = value;
-        } else if (key == "entry") {
-            manifest.entry = value;
+        } else if (key == "script" || key == "entry") {
+            // `entry` is the older, single-script spelling.
+            manifest.scripts.emplace_back(value);
         } else if (key == "scene") {
             manifest.scene = value;
         } else if (key == "mount") {
@@ -218,8 +219,8 @@ auto GameManifest::load(std::filesystem::path const &path, bool require_game) ->
 auto GameManifest::to_text() const -> std::string {
     auto text = std::format("name = \"{}\"\ntitle = \"{}\"\ngame = \"{}\"\nversion = \"{}\"\n", name, title, game, version);
 
-    if (!entry.empty()) {
-        text += std::format("entry = \"{}\"\n", entry);
+    for (auto const &script: scripts) {
+        text += std::format("script = \"{}\"\n", script);
     }
 
     if (!scene.empty()) {

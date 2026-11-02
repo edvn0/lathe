@@ -22,6 +22,24 @@ callbacks instead (`---@type GameScript` on it) still works. State is kept in `l
 `lowercase-global`, which would flag every callback. Scripts that need to wrap or feed another script (a test driver
 for a game, say) `require` it and redefine or wrap the globals it defines, or set a global the other one reads.
 
+## Scripts are part of the project
+
+There is no "run a script" mode: the engine starts as usual and a project carries its scripts. `lathe.project` lists them with
+repeatable lines, relative to the project (or a `mount`):
+
+```toml
+name = "my game"
+script = "assets/scripts/main.lua"
+script = "assets/scripts/hud.lua"
+mount = "../shared"          # more directories laid out like the project (see Project Settings)
+```
+
+Edit > Project Settings > Scripts adds and removes the lines and applies them at once. Each script runs in its own Lua
+state, so their globals (`on_update` and the rest) do not clash. The engine watches `assets/scripts`; when a script, or a
+module one `require`s, is saved on disk it repopulates the scene from the game and the scripts (the same as Ctrl+R), so you
+edit in any editor and see it on save. `samples/<name>/lathe.project` runs each of the repo's demo scripts in place:
+`lathe --project samples/snake`.
+
 ## Running a script without the engine
 
 `lathe-lua <SCRIPT> [--frames=N] [--dt=SECONDS] [--data-dir=DIR] [--mount=DIR,DIR] [--no-physics]` runs a game script on a

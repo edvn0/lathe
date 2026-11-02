@@ -24,6 +24,20 @@ namespace {
         return std::string{buffer.data()};
     }
 
+    // The script lines of the form that name something.
+    template<typename Form>
+    [[nodiscard]] auto scripts_of(Form const &form) -> std::vector<std::string> {
+        std::vector<std::string> scripts;
+
+        for (auto const &buffer: form.scripts) {
+            if (auto text = text_of(buffer); !text.empty()) {
+                scripts.push_back(std::move(text));
+            }
+        }
+
+        return scripts;
+    }
+
 }
 
 auto Application::project_form_dirty() const -> bool {
@@ -37,7 +51,7 @@ auto Application::project_form_dirty() const -> bool {
 
     return text_of(form.name) != manifest.name || text_of(form.title) != manifest.title ||
            text_of(form.version) != manifest.version || text_of(form.game) != manifest.game ||
-           text_of(form.entry) != manifest.entry || text_of(form.scene) != manifest.scene || form.gi != manifest.gi ||
+           scripts_of(form) != manifest.scripts || text_of(form.scene) != manifest.scene || form.gi != manifest.gi ||
            form.diagnostics != manifest.diagnostics || form.render != manifest.render;
 }
 
@@ -54,7 +68,7 @@ auto Application::save_project_form() -> bool {
     updated.manifest.title = text_of(form.title);
     updated.manifest.version = text_of(form.version);
     updated.manifest.game = text_of(form.game);
-    updated.manifest.entry = text_of(form.entry);
+    updated.manifest.scripts = scripts_of(form);
     updated.manifest.scene = text_of(form.scene);
     updated.manifest.gi = form.gi;
     updated.manifest.diagnostics = form.diagnostics;
@@ -67,8 +81,18 @@ auto Application::save_project_form() -> bool {
         return false;
     }
 
+    auto const scripts_changed = updated.manifest.scripts != project->manifest.scripts;
+
     project = std::move(updated);
-    form.status = "Saved. The game, script and global illumination apply the next time the project opens.";
+    form.status = "Saved. The game and global illumination apply the next time the project opens; the scripts run now.";
+
+    if (scripts_changed) {
+        // The watcher needs the directory to exist before a script is saved in it.
+        std::error_code ignored;
+        std::filesystem::create_directories(project->root / "assets" / "scripts", ignored);
+
+        apply_scripts(project->manifest.scripts);
+    }
 
     auto const &title = project->manifest.title.empty() ? project->manifest.name : project->manifest.title;
     glfwSetWindowTitle(context.window, title.c_str());
@@ -105,7 +129,10 @@ auto Application::draw_project_settings_page() -> void {
         fill_buffer(form.title, manifest.title);
         fill_buffer(form.version, manifest.version);
         fill_buffer(form.game, manifest.game);
-        fill_buffer(form.entry, manifest.entry);
+        form.scripts.clear();
+        for (auto const &script: manifest.scripts) {
+            fill_buffer(form.scripts.emplace_back(), script);
+        }
         fill_buffer(form.scene, manifest.scene);
         form.gi = manifest.gi;
         form.diagnostics = manifest.diagnostics;
@@ -124,16 +151,35 @@ auto Application::draw_project_settings_page() -> void {
             fill_buffer(form.game, "");
         }
 
-        for (auto const &name: game_menu_names()) {
-            if (ImGui::Selectable(name.c_str(), name == std::string_view{form.game.data()})) {
+        for (auto const name: available_games) {
+            if (ImGui::Selectable(std::string{name}.c_str(), name == std::string_view{form.game.data()})) {
                 fill_buffer(form.game, name);
             }
         }
         ImGui::EndCombo();
     }
 
-    ImGui::InputText("Script", form.entry.data(), form.entry.size());
-    ImGui::SetItemTooltip("The Lua script a scripted game starts with, relative to the project.");
+    ImGui::SeparatorText("Scripts");
+    ImGui::TextDisabled("Lua scripts the project runs, each on its own. They reload when saved on disk.");
+
+    auto remove_script = std::optional<std::size_t>{};
+    for (std::size_t index = 0; index < form.scripts.size(); ++index) {
+        ImGui::PushID(static_cast<int>(index));
+        ImGui::InputText("##script", form.scripts[index].data(), form.scripts[index].size());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Remove")) {
+            remove_script = index;
+        }
+        ImGui::PopID();
+    }
+    if (remove_script) {
+        form.scripts.erase(form.scripts.begin() + static_cast<std::ptrdiff_t>(*remove_script));
+    }
+    if (ImGui::Button("Add script")) {
+        fill_buffer(form.scripts.emplace_back(), "assets/scripts/main.lua");
+    }
+    ImGui::SetItemTooltip("Adds a line for a script (a path such as assets/scripts/main.lua). Saving applies the list "
+                          "at once and runs the scripts.");
 
     ImGui::InputText("Main scene", form.scene.data(), form.scene.size());
     ImGui::SetItemTooltip("The scene (.lbf) opened with the project, relative to the project.");

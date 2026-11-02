@@ -55,71 +55,41 @@ auto Runtime::subscribe_game_input() -> void {
     }
 }
 
-namespace {
-    // The scripted games: assets/scripts/<name>/main.lua in any data root (the project's, its mounts, the engine's).
-    auto scripted_games() -> std::vector<std::pair<std::string, std::string>> {
-        std::vector<std::pair<std::string, std::string>> found;
-        std::error_code ignored;
-
-        for (auto const &root: Paths::current().search_roots()) {
-            for (std::filesystem::directory_iterator it{root / "assets" / "scripts", ignored}, end; it != end;
-                 it.increment(ignored)) {
-                auto const name = it->path().filename().string();
-
-                if (it->is_directory(ignored) && std::filesystem::is_regular_file(it->path() / "main.lua", ignored) &&
-                    std::ranges::none_of(found, [&](auto const &entry) { return entry.first == name; })) {
-                    found.emplace_back(name, std::format("assets/scripts/{}/main.lua", name));
-                }
-            }
-        }
-
-        std::ranges::sort(found);
-
-        return found;
-    }
-}
-
-auto Runtime::game_menu_names() const -> std::vector<std::string> {
-    std::vector<std::string> names{available_games.begin(), available_games.end()};
-
-    for (auto const &[name, entry]: scripted_games()) {
-        if (std::ranges::find(names, name) == names.end()) {
-            names.push_back(name);
-        }
-    }
-
-    return names;
-}
-
 auto Runtime::setup_game(std::string_view name) const -> std::optional<GameSetup> {
-    auto const make_scripts = [this] {
-        auto scripts = std::make_unique<ScriptSystem>();
-
-        for (auto const &[module_name, opener]: native_script_modules) {
-            scripts->add_native_module(module_name, opener);
-        }
-
-        return scripts;
-    };
-
-    if (std::ranges::find(available_games, name) != available_games.end() && game_factory) {
-        auto setup = GameSetup{.game = game_factory(name)};
-
-        if (name == "lua") {
-            setup.scripts = make_scripts();
-            setup.script_entry = script_entry;
-        }
-
-        return setup;
+    if (std::ranges::find(available_games, name) == available_games.end() || !game_factory) {
+        return std::nullopt;
     }
 
-    for (auto const &[scripted_name, entry]: scripted_games()) {
-        if (scripted_name == name && game_factory) {
-            return GameSetup{.game = game_factory("empty"), .scripts = make_scripts(), .script_entry = entry};
-        }
+    auto setup = GameSetup{.game = game_factory(name), .scripts = std::make_unique<ScriptSystem>()};
+
+    for (auto const &[module_name, opener]: native_script_modules) {
+        setup.scripts->add_native_module(module_name, opener);
     }
 
-    return std::nullopt;
+    return setup;
+}
+
+auto Runtime::repopulate() -> void {
+    renderer->queue_render_thread_event([this] {
+        if (is_playing) {
+            stop();
+        }
+
+        populate_game();
+        scene_path.clear();
+        scene_pack.reset();
+        on_source_scene_replaced();
+    });
+}
+
+auto Runtime::apply_scripts(std::vector<std::string> paths) -> void {
+    script_paths = std::move(paths);
+
+    if (scripts) {
+        scripts->set_scripts(script_paths);
+    }
+
+    repopulate();
 }
 
 auto Runtime::populate_game() -> void {
@@ -337,6 +307,12 @@ auto Runtime::update(float delta_time) -> void {
     last_delta_time = delta_time;
 
     update_scene_load();
+
+    // A script saved in an editor reloads: the scene is rebuilt from the game and the scripts (not while one is opening).
+    if (scripts && !scene_load_job.has_value() && scripts->poll_changes()) {
+        info("[lua] a script changed on disk, reloading");
+        repopulate();
+    }
 
     if (auto *const streaming_terrain = active_terrain(); streaming_terrain != nullptr) {
         auto const observer = observer_position();
@@ -597,7 +573,7 @@ auto Runtime::switch_game(std::string name) -> void {
         auto const host = GameHost{
                 .player_mode = player_mode,
                 .request_exit = [window = context.window] { glfwSetWindowShouldClose(window, GLFW_TRUE); },
-                .script_entry = next->script_entry,
+                .scripts = script_paths,
                 .effects = &effect_system,
                 .text = text_renderer.get(),
         };
@@ -661,7 +637,7 @@ auto Runtime::switch_project(std::filesystem::path root) -> void {
         auto const &title = project->manifest.title.empty() ? project->manifest.name : project->manifest.title;
         glfwSetWindowTitle(context.window, title.c_str());
 
-        script_entry = project->manifest.entry;
+        script_paths = project->manifest.scripts;
         switch_game(project->manifest.game.empty() ? std::string{available_games.front()} : project->manifest.game);
 
         // Queued after the game switch, which replaces the source scene the project's scene then loads into.

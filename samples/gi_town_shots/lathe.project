@@ -1,0 +1,5 @@
+name = "gi_town_shots"
+title = "gi_town_shots"
+# The repo root holds assets/scripts, so the sample runs the script in place.
+mount = "../.."
+script = "assets/scripts/gi_test/town_shots.lua"

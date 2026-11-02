@@ -1,0 +1,5 @@
+name = "bistro_soak"
+title = "bistro_soak"
+# The repo root holds assets/scripts, so the sample runs the script in place.
+mount = "../.."
+script = "assets/scripts/bistro/soak.lua"

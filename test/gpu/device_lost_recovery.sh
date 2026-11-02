@@ -27,8 +27,14 @@ cd "$root"
 
 # An empty PATH hides zenity/kdialog/xmessage (the dialog would block waiting for a click); a private XDG_CACHE_HOME
 # gives a cold texture cache and keeps the test away from the real one.
+# The script runs as a project's script: a throwaway project holds it.
+project="$work/project"
+mkdir -p "$project/assets/scripts"
+cp test/gpu/device_lost.lua "$project/assets/scripts/main.lua"
+printf 'name = "device_lost"\ntitle = "device_lost"\nscript = "assets/scripts/main.lua"\n' >"$project/lathe.project"
+
 timeout 120 env XDG_CACHE_HOME="$cache" PATH=/nonexistent \
-    "$binary" --game=lua --script=test/gpu/device_lost.lua --screen-type=headless >"$log" 2>&1
+    "$binary" --project="$project" --screen-type=headless >"$log" 2>&1
 status=$?
 
 failures=0

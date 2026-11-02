@@ -1,6 +1,6 @@
 -- Dynamic scene for probe GI checks (phase 5): a box sliding in front of a red wall, an orbiting point light and a sun
 -- that sets over 3 seconds, so the probes have to follow moving geometry, lights and the sun.
---   lathe --game=lua --script=assets/scripts/gi_test/dynamic.lua --player
+--   lathe --project samples/gi_dynamic --player
 -- Frames: 0..60 sun high, 60..240 sun sinks from 60 to 8 degrees, the box slides all the time and the light orbits.
 -- Screenshots at 50 (before), 130 (mid sunset), 300 (after).
 

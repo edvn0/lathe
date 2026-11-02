@@ -1,5 +1,5 @@
 -- Fixed camera shots of the Bistro exterior for GI / ray traced shadow comparisons (no player, no physics).
---   lathe --game=lua --script=assets/scripts/gi_test/bistro_shots.lua --player
+--   lathe --project samples/gi_bistro_shots --player
 -- Shots advance every SHOT_FRAMES (200) frames; screenshot at frames 190, 390, 590, 790 for shots 1 to 4.
 
 local MODEL = "/home/edwin/Downloads/Bistro_v5_2/BistroExterior.glb"

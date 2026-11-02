@@ -97,7 +97,7 @@ auto Application::start_package() -> void {
                                     .title = text_of(package_form.title),
                                     .game = game_name,
                                     .version = text_of(package_form.version),
-                                    .entry = script_entry,
+                                    .scripts = script_paths,
                                     .scene = package_scene_file};
     options.output_dir = output_dir;
     options.data_root = Paths::current().data_root();
@@ -181,10 +181,6 @@ auto Application::draw_package_ui() -> void {
 
         auto const name = text_of(package_form.name);
         auto const valid = valid_name(name) && package_form.output[0] != '\0';
-
-        if (!game_name.empty() && game_name == "lua" && script_entry.empty()) {
-            ImGui::TextColored(ImVec4{1.0F, 0.75F, 0.3F, 1.0F}, "This is a Lua game but no --script is set.");
-        }
 
         if (valid) {
             std::error_code exists_error;

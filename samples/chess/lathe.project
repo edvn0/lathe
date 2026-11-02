@@ -1,0 +1,5 @@
+name = "chess"
+title = "chess"
+# The repo root holds assets/scripts, so the sample runs the script in place.
+mount = "../.."
+script = "assets/scripts/chess/main.lua"

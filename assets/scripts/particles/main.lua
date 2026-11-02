@@ -1,5 +1,5 @@
 -- Particles from Lua. The engine simulates and draws them; a script only describes an emitter on an entity.
---   lathe --game lua --script assets/scripts/particles/main.lua
+--   lathe --project samples/particles
 
 local fountain, embers, orange, teal
 local clock = 0.0

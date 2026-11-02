@@ -47,14 +47,14 @@ namespace {
 TEST_SUITE("unit") {
     TEST_CASE("GameManifest: scene round-trips through its text form") {
         TempDir dir;
-        GameManifest manifest{.name = "demo", .title = "Demo", .game = "lua", .version = "1.2.3", .entry = "a.lua", .scene = "scenes/main.lbf"};
+        GameManifest manifest{.name = "demo", .title = "Demo", .game = "lua", .version = "1.2.3", .scripts = {"a.lua"}, .scene = "scenes/main.lbf"};
 
         write(dir.path / "game.toml", manifest.to_text());
         auto const loaded = GameManifest::load(dir.path / "game.toml");
 
         REQUIRE(loaded.has_value());
         CHECK(loaded->scene == "scenes/main.lbf");
-        CHECK(loaded->entry == "a.lua");
+        CHECK(loaded->scripts == std::vector<std::string>{"a.lua"});
         CHECK(loaded->game == "lua");
     }
 
@@ -175,7 +175,7 @@ TEST_SUITE("unit") {
         write(dir.path / "staging.lbf", "scene");
 
         PackageOptions options;
-        options.manifest = GameManifest{.name = "demo", .title = "Demo", .game = "lua", .version = "1", .entry = "assets/scripts/x.lua", .scene = "scenes/main.lbf"};
+        options.manifest = GameManifest{.name = "demo", .title = "Demo", .game = "lua", .version = "1", .scripts = {"assets/scripts/x.lua"}, .scene = "scenes/main.lbf"};
         options.output_dir = dir.path / "out";
         options.cooked_scene = dir.path / "staging.lbf";
         options.data_root = dir.path / "data";

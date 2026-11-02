@@ -1,5 +1,5 @@
 -- Walk around the generated test town with the probe GI on.
---   lathe --game=lua --script=assets/scripts/gi_test/town_walk.lua --player
+--   lathe --project samples/gi_town_walk --player
 -- WASD walk, Shift run, Space jump, mouse look, F toggles free flight (Q down, E up), 1 noon, 2 dusk, 3 night, Esc quit.
 --
 -- The model comes from tools/blender/gi_town.py (it describes what is in the town):

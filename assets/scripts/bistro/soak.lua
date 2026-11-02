@@ -1,6 +1,6 @@
 -- Collision soak test for the Bistro: walks, runs and jumps the player in random directions for a while and reports
 -- tunnelling (a step whose path a ray shows to cross geometry), falls out of the world and time spent stuck.
---   lathe --game lua --script assets/scripts/bistro/soak.lua --player
+--   lathe --project samples/bistro_soak --player
 -- bistro.main looks `drive` up as a global each frame, so this script defines it after loading the game.
 require("bistro.main")
 

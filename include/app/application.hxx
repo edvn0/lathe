@@ -269,7 +269,8 @@ struct Application : Runtime {
         std::array<char, 128> title{};
         std::array<char, 32> version{};
         std::array<char, 128> game{};
-        std::array<char, 256> entry{};
+        // One buffer per script line of the project (assets/scripts/x.lua).
+        std::vector<std::array<char, 256>> scripts;
         std::array<char, 256> scene{};
         GiSettings gi;
         DiagnosticsSettings diagnostics;

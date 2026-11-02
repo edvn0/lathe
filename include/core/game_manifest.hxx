@@ -60,7 +60,9 @@ struct GameManifest {
     std::string title;
     std::string game;
     std::string version;
-    std::string entry;
+    // The project's scripts (`script = "..."`, repeatable): data paths such as assets/scripts/x.lua, each run in its own Lua
+    // state. Reloaded when they change on disk.
+    std::vector<std::string> scripts;
     // A cooked scene (.lbf) relative to the data directory, opened before play starts; empty to use the game's own.
     std::string scene;
     // Extra content directories (`mount = "..."`, repeatable), relative to the project root, searched after the project's
