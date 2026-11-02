@@ -151,8 +151,8 @@ auto Application::draw_project_settings_page() -> void {
             fill_buffer(form.game, "");
         }
 
-        for (auto const &name: game_menu_names()) {
-            if (ImGui::Selectable(name.c_str(), name == std::string_view{form.game.data()})) {
+        for (auto const name: available_games) {
+            if (ImGui::Selectable(std::string{name}.c_str(), name == std::string_view{form.game.data()})) {
                 fill_buffer(form.game, name);
             }
         }
