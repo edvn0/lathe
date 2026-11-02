@@ -32,6 +32,9 @@ struct VulkanContext {
 
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
+    // What kind of GPU was selected: discrete (including an external one) or integrated, among others; settings that
+    // scale with the device ("auto") read it.
+    VkPhysicalDeviceType device_type = VK_PHYSICAL_DEVICE_TYPE_OTHER;
 
     bool shader_objects_supported = false;
 

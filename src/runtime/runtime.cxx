@@ -328,6 +328,14 @@ auto Runtime::on_startup() -> void {
         if (render_config.ray_traced_shadows && context.ray_query_supported) {
             if (auto const created = renderer->ray_traced_shadows().create(*renderer); !created) {
                 warn("Could not set up ray traced shadows: {}", describe(created.error()));
+            } else {
+                auto const &resolution = render_config.ray_traced_shadow_resolution;
+                auto const discrete = context.device_type == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ||
+                                      context.device_type == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU;
+                renderer->ray_traced_shadows().settings().resolution_shift =
+                        resolution == "quarter" || (resolution == "auto" && !discrete) ? 2U
+                        : resolution == "half"                                          ? 1U
+                                                                                        : 0U;
             }
         }
 

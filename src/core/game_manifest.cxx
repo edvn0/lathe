@@ -94,6 +94,14 @@ namespace {
             render.ray_traced_shadows = bare == "true";
             return true;
         }
+        if (key == "ray_traced_shadow_resolution") {
+            if (bare != "auto" && bare != "full" && bare != "half" && bare != "quarter") {
+                error = "'ray_traced_shadow_resolution' must be \"auto\", \"full\", \"half\" or \"quarter\"";
+                return false;
+            }
+            render.ray_traced_shadow_resolution = std::string{bare};
+            return true;
+        }
         error = std::format("unknown key '{}' in [render]", key);
         return false;
     }
@@ -213,7 +221,8 @@ auto GameManifest::to_text() const -> std::string {
     }
 
     if (render != RenderSettings{}) {
-        text += std::format("\n[render]\nray_traced_shadows = {}\n", render.ray_traced_shadows);
+        text += std::format("\n[render]\nray_traced_shadows = {}\nray_traced_shadow_resolution = \"{}\"\n",
+                            render.ray_traced_shadows, render.ray_traced_shadow_resolution);
     }
 
     if (diagnostics != DiagnosticsSettings{}) {

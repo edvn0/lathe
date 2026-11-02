@@ -7088,7 +7088,7 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                                    std::uint32_t hdr_texture_index, render_pass::Callback scene_overlays,
                                    render_pass::ForwardPhase phase, std::uint32_t scene_colour_index,
                                    std::uint32_t scene_depth_index, std::uint32_t rt_shadow_texture_index,
-                                   bool rt_local_shadows)
+                                   bool rt_local_shadows, std::uint32_t rt_shadow_shift)
         -> std::expected<render_pass::HdrTextureIndex, RendererError> {
     auto const frame_index = pass_context.frame_index;
 
@@ -7131,6 +7131,7 @@ auto Renderer::record_forward_pass(render_pass::Context const &pass_context, Ren
                     .ao_sampler_index = sampler_storage_.linear_clamp().index,
                     .rt_shadow_texture_index = rt_shadow_texture_index,
                     .rt_local_shadows = rt_local_shadows,
+                    .rt_shadow_shift = rt_shadow_shift,
                     .outline_mask = true,
             },
             scene_overlays);

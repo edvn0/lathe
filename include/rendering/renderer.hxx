@@ -1656,7 +1656,8 @@ private:
                              std::uint32_t hdr_texture_index, render_pass::Callback scene_overlays,
                              render_pass::ForwardPhase phase = render_pass::ForwardPhase::all,
                              std::uint32_t scene_colour_index = 0, std::uint32_t scene_depth_index = 0,
-                             std::uint32_t rt_shadow_texture_index = 0xFFFFFFFFU, bool rt_local_shadows = false)
+                             std::uint32_t rt_shadow_texture_index = 0xFFFFFFFFU, bool rt_local_shadows = false,
+                             std::uint32_t rt_shadow_shift = 0)
             -> std::expected<render_pass::HdrTextureIndex, RendererError>;
 
     [[nodiscard]]

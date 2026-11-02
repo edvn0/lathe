@@ -189,6 +189,21 @@ auto Application::draw_project_settings_page() -> void {
         ImGui::SetItemTooltip("The sun's shadow is traced against the scene instead of read from the cascaded shadow map "
                               "(needs VK_KHR_ray_query; the editor's Ray traced shadows stage switches it while running). "
                               "Applies the next time the project opens.");
+        ImGui::BeginDisabled(!form.render.ray_traced_shadows);
+        constexpr std::array<char const *, 4> resolutions{"auto", "full", "half", "quarter"};
+        auto resolution = 0;
+        for (auto i = 0; i < 4; ++i) {
+            if (form.render.ray_traced_shadow_resolution == resolutions[static_cast<std::size_t>(i)]) {
+                resolution = i;
+            }
+        }
+        if (ImGui::Combo("Ray traced shadow resolution", &resolution, "auto\0full\0half\0quarter\0")) {
+            form.render.ray_traced_shadow_resolution = resolutions[static_cast<std::size_t>(resolution)];
+        }
+        ImGui::SetItemTooltip("The resolution the shadow mask is traced at, relative to the screen. auto: full on a discrete GPU, quarter on an integrated one. Half costs about a "
+                              "quarter of full; shadow edges get softer and can leak a little at silhouettes. Applies the "
+                              "next time the project opens.");
+        ImGui::EndDisabled();
     }
 
     if (ImGui::CollapsingHeader("Diagnostics")) {

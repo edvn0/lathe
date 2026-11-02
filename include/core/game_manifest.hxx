@@ -32,6 +32,9 @@ struct RenderSettings {
     // The sun's shadow is ray traced against the scene (docs/ray-traced-shadows.md) instead of coming from the cascaded
     // shadow map, where the device has VK_KHR_ray_query.
     bool ray_traced_shadows = true;
+    // The resolution the ray traced shadow mask is traced at: "full", "half" or "quarter" of the screen, or "auto" (full on a
+    // discrete GPU, quarter on an integrated or other one).
+    std::string ray_traced_shadow_resolution = "auto";
 
     auto operator==(RenderSettings const &) const -> bool = default;
 };

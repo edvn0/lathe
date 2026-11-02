@@ -35,6 +35,9 @@ struct PushConstants
     Ptr<uint> cluster_lights;
     // Bit 0: trace the sun. Bit 1: trace local lights.
     uint flags;
+    // The mask is (width, height) >> resolution_shift (rounded up): 0 full, 1 half, 2 quarter resolution. A mask pixel
+    // stands for the block of screen pixels it covers and traces from one of them, a different one each frame.
+    uint resolution_shift;
 };
 
 static const uint flag_sun = 1u;
@@ -117,7 +120,7 @@ bool occluded(float3 origin, float3 direction, float t_max)
 }
 
 // Visibility of one light from the point: 1 lit (or out of reach, which shades to nothing anyway), 0 blocked.
-float local_light_visibility(GpuLight light, float3 origin)
+float local_light_visibility(GpuLight light, float3 origin, float3 normal)
 {
     float3 to_light = light.position - origin;
     float distance = length(to_light);
@@ -126,6 +129,12 @@ float local_light_visibility(GpuLight light, float3 origin)
         return 1.0;
     }
     float3 direction = to_light / max(distance, 1e-6);
+    // The surface faces away from the light: it shades to nothing, and a ray would only hit the surface itself. A little
+    // slack keeps a normal that is slightly off (it comes from the depth buffer) from deciding a grazing point.
+    if (dot(normal, direction) < -0.02)
+    {
+        return 0.0;
+    }
     if (light.type == LightType.spot && dot(normalize(light.direction), -direction) * light.spot_scale + light.spot_offset <= 0.0)
     {
         return 1.0;
@@ -152,7 +161,7 @@ float3 trace_local_lights(float3 p, float3 normal, float bias)
             GpuLight light = pc.lights[pc.cluster_lights[list_base + i]];
             if (light.shadow_tile != no_shadow_tile)
             {
-                visibility[slot++] = local_light_visibility(light, origin);
+                visibility[slot++] = local_light_visibility(light, origin, normal);
             }
         }
     }
@@ -163,7 +172,7 @@ float3 trace_local_lights(float3 p, float3 normal, float bias)
             GpuLight light = pc.lights[i];
             if (light.shadow_tile != no_shadow_tile)
             {
-                visibility[slot++] = local_light_visibility(light, origin);
+                visibility[slot++] = local_light_visibility(light, origin, normal);
             }
         }
     }
@@ -174,11 +183,15 @@ float3 trace_local_lights(float3 p, float3 normal, float bias)
 [numthreads(8, 8, 1)]
 void main_cs(uint3 thread_id : SV_DispatchThreadID)
 {
-    if (thread_id.x >= pc.width || thread_id.y >= pc.height)
+    uint block = 1u << pc.resolution_shift;
+    uint2 mask_size = (uint2(pc.width, pc.height) + (block - 1u)) >> pc.resolution_shift;
+    if (thread_id.x >= mask_size.x || thread_id.y >= mask_size.y)
     {
         return;
     }
-    int2 pixel = int2(thread_id.xy);
+    // The screen pixel this mask pixel traces from: one of the block it covers, stepping through all of them over frames.
+    uint offset_index = (pc.frame * 5u) % (block * block);
+    int2 pixel = min(int2(thread_id.xy * block + uint2(offset_index % block, offset_index / block)), int2(int(pc.width) - 1, int(pc.height) - 1));
 
     float depth = depth_at(pixel);
     if (depth <= 0.0)

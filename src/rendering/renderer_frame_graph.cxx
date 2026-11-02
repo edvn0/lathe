@@ -1347,6 +1347,8 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
     // Ray traced sun shadows: a mask of the sun's visibility at every pixel's surface point, from the depth buffer and the
     // scene TLAS; the forward pass reads it where it used to look the point up in the cascades (docs/ray-traced-shadows.md).
     auto rt_shadow_image = frame_graph::ImageId{};
+    auto const rt_shadow_shift = std::min(ray_traced_shadows_.settings().resolution_shift,
+                                          RayTracedShadows::max_resolution_shift);
     // Local lights with a shadow tile are traced too (the first three per pixel, in the cluster list's order).
     auto const rt_local_lights_active = !secondary && ray_traced_shadows_.ready() &&
                                         ray_traced_shadows_.settings().enabled &&
@@ -1372,7 +1374,10 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                         [[maybe_unused]] auto const clusters =
                                 pass.read(cluster_lights, frame_graph::Use::shader_read, compute_stage);
                     }
-                    rt_shadow_image = pass.create(ao_description("rt_shadow_mask"));
+                    auto mask_description = ao_description("rt_shadow_mask");
+                    mask_description.extent = {RayTracedShadows::mask_extent(targets->extent.width, rt_shadow_shift),
+                                               RayTracedShadows::mask_extent(targets->extent.height, rt_shadow_shift), 1};
+                    rt_shadow_image = pass.create(mask_description);
                     rt_shadow_image = pass.write(rt_shadow_image, frame_graph::Use::storage_write, compute_stage,
                                                  frame_graph::ExitUse{frame_graph::Use::sampled});
                     pass.side_effect();
@@ -1530,7 +1535,8 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
         auto const hdr = record_forward_pass(pass_context, frame, *targets, state.handoff.ao_texture_index,
                                              transient_index(output), render_pass::Callback::bind(scene_overlays),
                                              phase, scene_copies.first, scene_copies.second, rt_shadow_index,
-                                             rt_local_lights_active && phase != render_pass::ForwardPhase::blend);
+                                             rt_local_lights_active && phase != render_pass::ForwardPhase::blend,
+                                             rt_shadow_shift);
         if (hdr) {
             state.handoff.hdr = *hdr;
         } else {

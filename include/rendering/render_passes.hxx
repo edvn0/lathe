@@ -244,6 +244,8 @@ namespace render_pass {
         std::uint32_t rt_shadow_texture_index = 0xFFFFFFFFU;
         // The mask's G, B and A hold the visibility of the pixel's first shadow casting local lights.
         bool rt_local_shadows = false;
+        // The mask is the screen size >> this (0 full, 1 half, 2 quarter resolution).
+        std::uint32_t rt_shadow_shift = 0;
 
         bool outline_mask = false;
     };

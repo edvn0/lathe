@@ -709,7 +709,8 @@ namespace {
 
         VkPhysicalDeviceProperties properties{};
         vkGetPhysicalDeviceProperties(context.physical_device, &properties);
-        info("Selected physical device: {}", properties.deviceName);
+        context.device_type = properties.deviceType;
+        info("Selected physical device: {} (type {})", properties.deviceName, static_cast<int>(properties.deviceType));
 
         context.supported_sample_counts =
                 properties.limits.framebufferColorSampleCounts & properties.limits.framebufferDepthSampleCounts;
