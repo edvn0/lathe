@@ -257,7 +257,7 @@ TEST_CASE("a fixed seed reproduces random sequences, per stream") {
     set_fixed_random_seed(std::nullopt);
 }
 
-TEST_CASE("stages are keyed by pass id: absent frames count as 0 ms and late arrivals are backfilled") {
+TEST_CASE("stages are keyed by pass id: a stage is summarised over the frames it ran in and late arrivals are backfilled") {
     BenchmarkOptions options;
     options.frame_count = 3;
     options.warmup_frame_count = 0;
@@ -280,7 +280,7 @@ TEST_CASE("stages are keyed by pass id: absent frames count as 0 ms and late arr
 
     auto const json = run.to_json(BenchmarkEnvironment{.device_name = "gpu"});
     CHECK(json.find("\"id\": \"full_frame\"") != std::string::npos);
-    CHECK(json.find("\"id\": \"a\", \"name\": \"a\", \"mean_ms\": 0.6667") != std::string::npos);
-    CHECK(json.find("\"id\": \"b\", \"name\": \"b\", \"mean_ms\": 0.8333") != std::string::npos);
+    CHECK(json.find("\"id\": \"a\", \"name\": \"a\", \"mean_ms\": 1.0000") != std::string::npos);
+    CHECK(json.find("\"id\": \"b\", \"name\": \"b\", \"mean_ms\": 1.2500") != std::string::npos);
     CHECK(json.find("\"full_frame_ms\": [2.0000, 3.0000, 1.0000]") != std::string::npos);
 }

@@ -248,6 +248,7 @@ auto BenchmarkRun::on_frame_drawn(BenchmarkFrameInput const &input) -> void {
         });
         for (auto &stage: stages_) {
             stage.samples_ms.push_back(0.0F);
+            stage.ran.push_back(0);
         }
 
         auto const record = [this](std::size_t first, bool valid, std::initializer_list<std::uint32_t> values) {
