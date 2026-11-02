@@ -25,10 +25,26 @@ TEST_SUITE("unit") {
         CHECK(timings.find("p")->ema_ms == doctest::Approx(1.0F + GpuTimings::smoothing));
     }
 
-    TEST_CASE("a pass that goes idle is inactive and restarts its average on return") {
+    TEST_CASE("a pass that skips a frame stays active and keeps its average") {
         GpuTimings timings;
         timings.begin_frame();
         timings.record("p", "P", 0, 1.0F);
+        timings.begin_frame();
+        CHECK(timings.find("p")->active);
+
+        timings.begin_frame();
+        timings.record("p", "P", 0, 5.0F);
+        CHECK(timings.find("p")->ema_ms == doctest::Approx(1.0F + GpuTimings::smoothing * 4.0F));
+    }
+
+    TEST_CASE("a pass that stays away past the grace period goes idle and restarts its average on return") {
+        GpuTimings timings;
+        timings.begin_frame();
+        timings.record("p", "P", 0, 1.0F);
+        for (auto frame = 0; frame < GpuTimings::idle_grace; ++frame) {
+            timings.begin_frame();
+            CHECK(timings.find("p")->active);
+        }
         timings.begin_frame();
         CHECK_FALSE(timings.find("p")->active);
 

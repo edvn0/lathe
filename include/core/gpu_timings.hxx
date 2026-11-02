@@ -16,6 +16,7 @@ class GpuTimings {
 public:
     static constexpr std::size_t history_length = 120;
     static constexpr float smoothing = 0.05F;
+    static constexpr std::uint8_t idle_grace = 8;
 
     struct Entry {
         std::string id;
@@ -25,6 +26,8 @@ public:
         bool active = false;
         // Active on the previous frame, so the average carries on rather than restarting.
         bool primed = false;
+        // Frames since the pass last ran; it stays active for `idle_grace` of them (passes that run every Nth frame).
+        std::uint8_t missed = 0;
         float ema_ms = 0.0F;
         float last_ms = 0.0F;
         // Ring buffer of raw samples, oldest at `history_head` once full.
@@ -52,11 +55,12 @@ public:
         [[nodiscard]] auto count() const noexcept -> std::ptrdiff_t { return static_cast<std::ptrdiff_t>(history_count); }
     };
 
-    // Marks every pass idle; `record` revives the ones that ran this frame.
+    // Passes that have not run for `idle_grace` frames go idle; `record` revives the ones that ran this frame.
     auto begin_frame() noexcept -> void {
         for (auto &entry: entries_) {
             entry.primed = entry.active;
-            entry.active = false;
+            entry.missed = static_cast<std::uint8_t>(std::min<unsigned>(entry.missed + 1U, 255U));
+            entry.active = entry.active && entry.missed <= idle_grace;
         }
     }
 
@@ -71,6 +75,7 @@ public:
         entry.ema_ms = entry.primed ? entry.ema_ms + smoothing * (*ms - entry.ema_ms) : *ms;
         entry.last_ms = *ms;
         entry.active = true;
+        entry.missed = 0;
 
         entry.history[entry.history_head] = *ms;
         entry.history_head = (entry.history_head + 1) % history_length;
