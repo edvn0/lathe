@@ -1,5 +1,7 @@
 #include "rendering/ray_traced_shadows.hxx"
 
+#include <algorithm>
+
 #include <tracy/Tracy.hpp>
 
 #include "core/logger.hxx"
@@ -27,6 +29,7 @@ namespace {
         VkDeviceAddress lights;
         VkDeviceAddress cluster_lights;
         std::uint32_t flags;
+        std::uint32_t resolution_shift;
     };
     static_assert(sizeof(Push) <= 256);
 
@@ -66,6 +69,7 @@ auto RayTracedShadows::record(VkCommandBuffer command_buffer, std::uint32_t fram
     set->bind(command_buffer);
     renderer_->resource_table().bind(command_buffer, frame_index, VK_PIPELINE_BIND_POINT_COMPUTE, set->layout());
 
+    auto const shift = std::min(settings_.resolution_shift, max_resolution_shift);
     auto const push = Push{
             .inverse_view_projection = inputs.inverse_view_projection,
             .instances = inputs.instance_table,
@@ -82,7 +86,9 @@ auto RayTracedShadows::record(VkCommandBuffer command_buffer, std::uint32_t fram
             .lights = inputs.lights,
             .cluster_lights = inputs.cluster_lights,
             .flags = (inputs.trace_sun ? 1U : 0U) | (inputs.trace_local ? 2U : 0U),
+            .resolution_shift = shift,
     };
     vkCmdPushConstants(command_buffer, set->layout(), VK_SHADER_STAGE_ALL, 0, sizeof(push), &push);
-    vkCmdDispatch(command_buffer, (inputs.width + group - 1U) / group, (inputs.height + group - 1U) / group, 1);
+    vkCmdDispatch(command_buffer, (mask_extent(inputs.width, shift) + group - 1U) / group,
+                  (mask_extent(inputs.height, shift) + group - 1U) / group, 1);
 }

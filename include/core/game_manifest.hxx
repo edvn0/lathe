@@ -20,6 +20,8 @@ struct GiSettings {
     float emitter_intensity = 200.0F;
     // The second, coarser cascade that reaches four times as far.
     bool far_cascade = true;
+    // The far cascade updates every this many frames; 0 follows the performance tier.
+    std::uint32_t far_update_interval = 0;
     // The point lights a model gets from its emissive meshes when it loads: "auto" (none while the probes light them
     // themselves), "on" or "off".
     std::string synthesize_lights = "auto";
@@ -32,6 +34,12 @@ struct RenderSettings {
     // The sun's shadow is ray traced against the scene (docs/ray-traced-shadows.md) instead of coming from the cascaded
     // shadow map, where the device has VK_KHR_ray_query.
     bool ray_traced_shadows = true;
+    // The GPU class that picks the defaults of the quality settings left on "auto": "auto" (detected from the device type
+    // and memory), "low", "medium" or "high".
+    std::string performance_tier = "auto";
+    // The resolution the ray traced shadow mask is traced at: "full", "half" or "quarter" of the screen, or "auto" (follows
+    // the performance tier: full on high, half on medium, quarter on low).
+    std::string ray_traced_shadow_resolution = "auto";
 
     auto operator==(RenderSettings const &) const -> bool = default;
 };

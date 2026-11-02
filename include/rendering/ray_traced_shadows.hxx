@@ -25,7 +25,18 @@ public:
         float sun_spread = 0.006F;
         // Also trace the shadow of the lights that have a shadow tile (the first three per pixel); the rest keep the atlas.
         bool local_lights = true;
+        // The mask is traced at the screen size >> this: 0 full, 1 half, 2 quarter resolution (at most max_resolution_shift).
+        // Each mask pixel traces from one pixel of the block it covers, a different one every frame.
+        std::uint32_t resolution_shift = 0;
     };
+
+    static constexpr std::uint32_t max_resolution_shift = 2;
+
+    // The extent of the mask for a screen of this size and a resolution shift.
+    [[nodiscard]] static constexpr auto mask_extent(std::uint32_t size, std::uint32_t shift) noexcept -> std::uint32_t {
+        auto const block = std::uint32_t{1} << shift;
+        return (size + block - 1U) / block;
+    }
 
     RayTracedShadows() = default;
 
@@ -47,6 +58,7 @@ public:
         // Bindless indices: the resolved depth (sampled_2d_depth) and the mask the pass writes (storage_2d).
         std::uint32_t depth_texture = 0;
         std::uint32_t mask_storage = 0;
+        // The screen (depth buffer) size; the mask is smaller by Settings::resolution_shift.
         std::uint32_t width = 0;
         std::uint32_t height = 0;
         // Towards the sun.

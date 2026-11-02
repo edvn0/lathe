@@ -169,6 +169,11 @@ auto Application::draw_project_settings_page() -> void {
         ImGui::DragFloat("Emitter intensity", &gi.emitter_intensity, 1.0F, 0.0F, 100000.0F, "%.0f");
         ImGui::SetItemTooltip("How strongly small emissive pieces (bulbs, lantern glass) light their surroundings.");
         ImGui::Checkbox("Far cascade", &gi.far_cascade);
+        auto far_interval = static_cast<int>(gi.far_update_interval);
+        if (ImGui::SliderInt("Far cascade update interval", &far_interval, 0, 16, far_interval == 0 ? "auto" : "every %d frames")) {
+            gi.far_update_interval = static_cast<std::uint32_t>(far_interval);
+        }
+        ImGui::SetItemTooltip("How often the far cascade updates; auto follows the performance tier.");
         constexpr std::array<char const *, 3> choices{"auto", "on", "off"};
         auto current = 0;
         for (auto i = 0; i < 3; ++i) {
@@ -185,10 +190,38 @@ auto Application::draw_project_settings_page() -> void {
     }
 
     if (ImGui::CollapsingHeader("Rendering")) {
+        constexpr std::array<char const *, 4> tiers{"auto", "low", "medium", "high"};
+        auto tier = 0;
+        for (auto i = 0; i < 4; ++i) {
+            if (form.render.performance_tier == tiers[static_cast<std::size_t>(i)]) {
+                tier = i;
+            }
+        }
+        if (ImGui::Combo("Performance tier", &tier, "auto\0low\0medium\0high\0")) {
+            form.render.performance_tier = tiers[static_cast<std::size_t>(tier)];
+        }
+        ImGui::SetItemTooltip("The GPU class the quality settings left on auto follow. auto: detected from the device (a "
+                              "discrete GPU with 6 GiB or more is high, other discrete ones medium, integrated ones low). "
+                              "Applies the next time the project opens.");
         ImGui::Checkbox("Ray traced sun shadows", &form.render.ray_traced_shadows);
         ImGui::SetItemTooltip("The sun's shadow is traced against the scene instead of read from the cascaded shadow map "
                               "(needs VK_KHR_ray_query; the editor's Ray traced shadows stage switches it while running). "
                               "Applies the next time the project opens.");
+        ImGui::BeginDisabled(!form.render.ray_traced_shadows);
+        constexpr std::array<char const *, 4> resolutions{"auto", "full", "half", "quarter"};
+        auto resolution = 0;
+        for (auto i = 0; i < 4; ++i) {
+            if (form.render.ray_traced_shadow_resolution == resolutions[static_cast<std::size_t>(i)]) {
+                resolution = i;
+            }
+        }
+        if (ImGui::Combo("Ray traced shadow resolution", &resolution, "auto\0full\0half\0quarter\0")) {
+            form.render.ray_traced_shadow_resolution = resolutions[static_cast<std::size_t>(resolution)];
+        }
+        ImGui::SetItemTooltip("The resolution the shadow mask is traced at, relative to the screen. auto: full on a discrete GPU, quarter on an integrated one. Half costs about a "
+                              "quarter of full; shadow edges get softer and can leak a little at silhouettes. Applies the "
+                              "next time the project opens.");
+        ImGui::EndDisabled();
     }
 
     if (ImGui::CollapsingHeader("Diagnostics")) {

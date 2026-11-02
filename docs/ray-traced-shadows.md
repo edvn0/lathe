@@ -25,6 +25,11 @@ cascades (`ray_traced_sun_shadow` in `forward_geom.slang`), averaging the pixel 
   0.0047), stratified and turned per pixel by interleaved gradient noise. Two rays go first (the middle and a random point);
   only pixels where they disagree, the penumbra, trace two more, so most pixels cost two rays. 0.8 ms at 1280x720 in the
   town stress scene.
+- **Resolution.** The mask can be traced at half or quarter of the screen size: `[render] ray_traced_shadow_resolution =
+  "auto" | "full" | "half" | "quarter"` (default `auto`: follows the performance tier, `docs/performance-tiers.md`) (Edit > Project Settings > Rendering, applied the next time the project opens; the frame graph
+  panel's "Ray traced shadows" stage switches it while the editor runs). Each mask pixel traces from one pixel of the block
+  it covers, a different one every frame, and the forward pass reads the mask at its own pixel's block, so edges get softer
+  and can leak a little at silhouettes. Half costs about a quarter of full.
 - **Alpha tested geometry.** Instances from the mask batches are `flag_alpha_tested`: not opaque in the TLAS, so the shadow ray
   sees their triangles as candidates, evaluates the material's alpha test (base colour alpha times the texture, against the
   cutoff) and commits only the ones that pass. Leaves cast the shadow of their leaves, not of their cards. The probe GI traces
@@ -42,7 +47,8 @@ cascades (`ray_traced_sun_shadow` in `forward_geom.slang`), averaging the pixel 
 
 The same pass also traces the lights that have a shadow tile (the shadow atlas still decides which lights cast). For each
 pixel it walks the cluster's light list (the whole list without clustered lighting) and traces one ray to each shadow
-casting light, writing the first three into the mask's G, B and A. The forward pass counts the shadow casting lights of
+casting light, writing the first three into the mask's G, B and A. A point facing away from a light (the depth derived normal
+against the direction to the light, with a little slack) is blocked without a ray. The forward pass counts the shadow casting lights of
 its own list the same way and reads that slot; a fourth and later light, the blended pass and the second viewport keep
 the atlas. One ray per light per pixel gives hard edges. The frame graph panel's "Local lights" checkbox switches it
 (`Settings::local_lights`). The pass now runs when the sun is off but a shadowed light exists.

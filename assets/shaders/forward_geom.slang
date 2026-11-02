@@ -286,13 +286,19 @@ DecalLayers gather_decals(PC pc, float3 world_position, float3 geometric_normal,
     return layers;
 }
 
+// The mask is (screen size) >> this, rounded up (rt_shadows.slang: 0 full, 1 half, 2 quarter resolution).
+int rt_mask_shift(PC pc)
+{
+    return int(pc.rt_local_shadows >> 8u);
+}
+
 // The ray traced sun visibility (rt_shadows.slang) at a pixel: the pixel and its four neighbours, the centre counting
 // double, which turns the pass's one noisy ray per pixel into a soft edge. Neighbours are clamped to the screen.
 float ray_traced_sun_shadow(PC pc, float2 pixel)
 {
     const var mask = sampled_2d[pc.rt_shadow_texture];
-    int2 size = int2(pc.screen_size);
-    int2 centre = clamp(int2(pixel), int2(0), size - 1);
+    int2 size = (int2(pc.screen_size) + int2((1 << rt_mask_shift(pc)) - 1)) >> rt_mask_shift(pc);
+    int2 centre = clamp(int2(pixel) >> rt_mask_shift(pc), int2(0), size - 1);
     float sum = mask.Load(int3(centre, 0)).r * 4.0;
     sum += mask.Load(int3(clamp(centre + int2(1, 0), int2(0), size - 1), 0)).r;
     sum += mask.Load(int3(clamp(centre - int2(1, 0), int2(0), size - 1), 0)).r;
@@ -571,9 +577,10 @@ var base_colour = base_sample.xyz *
     // list order (the same count rt_shadows.slang makes). Lights past those keep the atlas.
     float4 traced_local = float4(1.0);
     uint shadow_slot = 0;
-    if (pc.rt_local_shadows != 0) {
-        const int2 mask_size = int2(pc.screen_size);
-        traced_local = sampled_2d[pc.rt_shadow_texture].Load(int3(clamp(int2(input.position.xy), int2(0), mask_size - 1), 0));
+    if ((pc.rt_local_shadows & 1u) != 0) {
+        const int2 mask_size = (int2(pc.screen_size) + int2((1 << rt_mask_shift(pc)) - 1)) >> rt_mask_shift(pc);
+        traced_local = sampled_2d[pc.rt_shadow_texture].Load(
+                int3(clamp(int2(input.position.xy) >> rt_mask_shift(pc), int2(0), mask_size - 1), 0));
     }
 
     if (ubo.clustered_lighting != 0) {
@@ -602,7 +609,7 @@ var base_colour = base_sample.xyz *
             const bool owned = lane_next == light_index;
             float traced_visibility = -1.0;
             if (owned && light.shadow_tile != no_shadow_tile) {
-                if (pc.rt_local_shadows != 0 && shadow_slot < rt_local_shadow_slots) {
+                if ((pc.rt_local_shadows & 1u) != 0 && shadow_slot < rt_local_shadow_slots) {
                     traced_visibility = traced_local[1 + shadow_slot];
                 }
                 ++shadow_slot;
@@ -621,7 +628,7 @@ var base_colour = base_sample.xyz *
             const GpuLight light = pc.lights[light_index];
             float traced_visibility = -1.0;
             if (light.shadow_tile != no_shadow_tile) {
-                if (pc.rt_local_shadows != 0 && shadow_slot < rt_local_shadow_slots) {
+                if ((pc.rt_local_shadows & 1u) != 0 && shadow_slot < rt_local_shadow_slots) {
                     traced_visibility = traced_local[1 + shadow_slot];
                 }
                 ++shadow_slot;

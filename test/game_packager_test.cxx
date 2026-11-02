@@ -122,10 +122,18 @@ TEST_SUITE("unit") {
 
         GameManifest tuned = plain;
         tuned.render.ray_traced_shadows = false;
+        tuned.render.performance_tier = "low";
+        tuned.render.ray_traced_shadow_resolution = "half";
+        tuned.gi.far_update_interval = 3;
         write(dir.path / "game.toml", tuned.to_text());
         auto const loaded = GameManifest::load(dir.path / "game.toml");
         REQUIRE(loaded.has_value());
         CHECK_FALSE(loaded->render.ray_traced_shadows);
+        CHECK(loaded->render.performance_tier == "low");
+        CHECK(loaded->render.ray_traced_shadow_resolution == "half");
+        CHECK(loaded->gi.far_update_interval == 3);
+        write(dir.path / "tier.toml", "game = \"lua\"\n[render]\nperformance_tier = \"ultra\"\n");
+        CHECK_FALSE(GameManifest::load(dir.path / "tier.toml").has_value());
 
         write(dir.path / "bad.toml", "game = \"lua\"\n[render]\nray_traced_shadows = maybe\n");
         CHECK_FALSE(GameManifest::load(dir.path / "bad.toml").has_value());

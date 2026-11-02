@@ -15,6 +15,7 @@ add_library(
         image.cxx
         image_storage.cxx
         model_vertex.cxx
+        performance_tier.cxx
         png_decoder.cxx
         queue_selection.cxx
         queue_set.cxx
