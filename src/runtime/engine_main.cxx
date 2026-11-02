@@ -621,7 +621,7 @@ namespace {
         // The camera comes first: the scene submission places camera-relative content (the floating origin, the ocean
         // grid) from it.
         auto const active_aspect = runtime.renderer->aspect(frame->frame_index);
-        auto const active_camera = runtime.is_playing ? runtime.camera(active_aspect)
+        auto const active_camera = runtime.is_playing ? runtime.game_camera(active_aspect)
                                                       : runtime.editing_camera(active_aspect);
 
         runtime.frame_view = active_camera.view;

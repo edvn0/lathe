@@ -89,7 +89,7 @@ struct Runtime {
     // so a script is called wherever the game is.
     auto populate_game() -> void;
     [[nodiscard]] auto wants_cursor() const -> bool;
-    [[nodiscard]] auto camera(float aspect_ratio) const -> CameraParams;
+    [[nodiscard]] auto game_camera(float aspect_ratio) const -> CameraParams;
     [[nodiscard]] auto behaviour_names() -> std::span<std::string const>;
     [[nodiscard]] auto behaviour_schema(std::string const &name) -> ScriptSchema const *;
     auto reload_behaviours() -> void;

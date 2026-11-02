@@ -2230,16 +2230,16 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
             ImGui::Text("Handle: index %u, generation %u (%s)", script.script.index, script.script.generation,
                         script.script.valid() ? "valid" : "invalid");
 
-            auto &scripts = renderer->assets().scripts();
-            if (scripts.entries().empty()) {
+            auto &script_assets = renderer->assets().scripts();
+            if (script_assets.entries().empty()) {
                 ImGui::TextDisabled("No named scripts registered yet.");
                 return false;
             }
 
             bool changed = false;
-            auto const current_name = scripts.name_of(script.script);
+            auto const current_name = script_assets.name_of(script.script);
             if (ImGui::BeginCombo("Asset", current_name.empty() ? "(unnamed)" : std::string(current_name).c_str())) {
-                for (auto const &entry: scripts.entries()) {
+                for (auto const &entry: script_assets.entries()) {
                     if (entry.name.empty()) {
                         continue; // ImGui rejects an item without a label
                     }
