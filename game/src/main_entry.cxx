@@ -4,7 +4,7 @@
 #include <string_view>
 
 #include "game/game.hxx"
-#include "luagame/lua_game.hxx"
+#include "luagame/script_system.hxx"
 #include "basic_game.hxx"
 #include "chess_game.hxx"
 #include "chess_lua.hxx"
@@ -23,7 +23,7 @@
 #include "shadow_caster_game.hxx"
 
 namespace {
-    constexpr std::array<std::string_view, 16> names{"empty", "basic", "punt", "chess", "lua", "moving", "meshlets", "gallery", "lights", "materials", "shadows", "shadowcity", "glass", "water", "globe", "snake"};
+    constexpr std::array<std::string_view, 14> names{"empty", "basic", "punt", "chess", "lua", "moving", "meshlets", "gallery", "materials", "shadows", "shadowcity", "glass", "water", "globe"};
 }
 
 auto game_names() -> std::span<std::string_view const> { return names; }
@@ -37,24 +37,6 @@ auto create_game(std::string_view name) -> std::unique_ptr<IGame> {
     if (name == "meshlets") {
         info("Starting the 'meshlets' showcase");
         return std::make_unique<MeshletShowcaseGame>();
-    }
-
-    if (name == "snake") {
-        info("Starting 'snake' (all scripts)");
-        auto game = std::make_unique<LuaGame>();
-
-        game->set_default_entry("assets/scripts/snake/main.lua");
-
-        return game;
-    }
-
-    if (name == "lights") {
-        info("Starting the 'lights' bloom demo");
-        auto game = std::make_unique<LuaGame>();
-
-        game->set_default_entry("assets/scripts/lights/main.lua");
-
-        return game;
     }
 
     if (name == "empty") {
@@ -104,12 +86,7 @@ auto create_game(std::string_view name) -> std::unique_ptr<IGame> {
 
     if (name == "lua") {
         info("Starting a Lua game");
-        auto game = std::make_unique<LuaGame>();
-
-        game->add_native_module("native.chess", &luaopen_lathe_chess);
-        game->add_native_module("native.net", &luaopen_lathe_net);
-
-        return game;
+        return std::make_unique<EmptyGame>();
     }
 
     if (name == "chess") {
@@ -118,4 +95,11 @@ auto create_game(std::string_view name) -> std::unique_ptr<IGame> {
     }
 
     return std::make_unique<BasicGame>();
+}
+
+auto native_script_modules() -> std::vector<std::pair<std::string, lua_CFunction>> {
+    return {
+            {"native.chess", &luaopen_lathe_chess},
+            {"native.net", &luaopen_lathe_net},
+    };
 }

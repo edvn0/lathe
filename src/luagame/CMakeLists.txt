@@ -1,5 +1,5 @@
 # ------------------------------------------------------------------------------
-# engine_luagame: LuaGame, the IGame that runs a Lua script, and the Lua API it gives scripts (scene, entity, assets,
+# engine_luagame: ScriptSystem, the engine's scripting component that runs a Lua entry script, and the Lua API it gives scripts (scene, entity, assets,
 # physics, animation, ui, ...), plus per-entity behaviours. Sits above engine_scripting (the sandboxed runtime) and
 # engine_game (IGame); knows nothing of the editor in engine_app.
 # ------------------------------------------------------------------------------
@@ -10,7 +10,7 @@ add_library(
         lua_animation.cxx
         lua_behaviours.cxx
         lua_http.cxx
-        lua_game.cxx
+        script_system.cxx
         lua_game_api.cxx
 )
 

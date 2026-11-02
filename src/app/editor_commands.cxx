@@ -48,7 +48,7 @@ auto Application::register_editor_commands() -> void {
                               stop();
                           }
 
-                          game->on_populate(*source_scene, *renderer, engine_models);
+                          populate_game();
                           scene_path.clear();
                           scene_pack.reset();
                           mark_source_scene_clean();

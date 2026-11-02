@@ -8,7 +8,7 @@
 
 #include <entt/entt.hpp>
 
-#include "luagame/lua_game.hxx"
+#include "luagame/script_system.hxx"
 #include "luagame/lua_game_api.hxx"
 #include "core/logger.hxx"
 #include "core/paths.hxx"

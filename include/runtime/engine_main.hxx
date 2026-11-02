@@ -8,8 +8,11 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include "core/forward.hxx"
+#include "luagame/script_system.hxx"
 
 class CommandLine;
 class IGame;
@@ -84,6 +87,8 @@ public:
 // (game/src/main_entry.cxx), so the engine libraries stay game-agnostic.
 auto game_names() -> std::span<std::string_view const>;
 auto create_game(std::string_view name) -> std::unique_ptr<IGame>;
+// The native Lua modules (`require("native.chess")`, ...) the executable offers every script. Not tied to a game.
+auto native_script_modules() -> std::vector<std::pair<std::string, lua_CFunction>>;
 
 // Parses the command line, brings up Vulkan and a Runtime from `profile`, and runs frames until the window closes.
 // Returns the process exit code.

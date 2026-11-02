@@ -23,7 +23,7 @@
 #include <glm/vec4.hpp>
 #include <imgui.h>
 
-#include "luagame/lua_game.hxx"
+#include "luagame/script_system.hxx"
 #include "assets/gpu_texture_encoder.hxx"
 #include "assets/material_storage.hxx"
 #include "assets/model.hxx"

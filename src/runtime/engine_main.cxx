@@ -621,7 +621,7 @@ namespace {
         // The camera comes first: the scene submission places camera-relative content (the floating origin, the ocean
         // grid) from it.
         auto const active_aspect = runtime.renderer->aspect(frame->frame_index);
-        auto const active_camera = runtime.is_playing ? runtime.game->camera(*runtime.active_scene(), active_aspect)
+        auto const active_camera = runtime.is_playing ? runtime.game_camera(active_aspect)
                                                       : runtime.editing_camera(active_aspect);
 
         runtime.frame_view = active_camera.view;
@@ -804,7 +804,7 @@ namespace {
                 app->capture_mouse();
             }
         } else if (!app->play_fullscreen && app->viewport_hovered && !app->game_mouse_captured &&
-                   !app->game->wants_cursor()) {
+                   !app->wants_cursor()) {
             app->game_mouse_captured = true;
             app->capture_mouse();
         }
@@ -1010,7 +1010,9 @@ namespace {
             names += names.empty() ? "" : ", ";
             names += name;
         }
-        return std::format("Which game to run: {} (default {})", names, game_names().front());
+        return std::format("Which game to run: {}, or a script game, the <name> of any assets/scripts/<name>/main.lua "
+                           "(default {})",
+                           names, game_names().front());
     }
 
     CVar<std::string> game_cvar{{
@@ -1019,19 +1021,14 @@ namespace {
             .help = "",
             .help_fn = game_help,
             .hint = "NAME",
+            // Script games are found under the data roots, which are not known yet while the arguments are read: an
+            // unknown name is reported at start-up (setup_game).
             .validator = [](std::string_view text) -> std::expected<void, std::string> {
-                auto const names = game_names();
-
-                if (std::ranges::find(names, text) != names.end()) {
-                    return {};
+                if (text.empty() || text.find_first_of("/\\") != std::string_view::npos) {
+                    return std::unexpected(std::format("'{}' (a game name, not a path)", text));
                 }
 
-                std::string expected;
-                for (auto const name: names) {
-                    expected += expected.empty() ? "" : "|";
-                    expected += name;
-                }
-                return std::unexpected(std::format("'{}' (expected {})", text, expected));
+                return {};
             },
     }};
 
@@ -1364,16 +1361,33 @@ auto run_engine(int argc, char **argv, EngineProfile &profile) -> int {
     runtime.script_entry = !cvars::script.get().empty() ? cvars::script.get() : launch ? launch->entry : std::string{};
     runtime.game_factory = [](std::string_view name) { return create_game(name); };
     runtime.available_games = game_names();
-    runtime.game = create_game(runtime.game_name);
+    runtime.native_script_modules = native_script_modules();
+
+    auto first = runtime.setup_game(runtime.game_name);
+
+    if (!first) {
+        error("Unknown game '{}': not a native game and no assets/scripts/{}/main.lua; starting '{}'.",
+              runtime.game_name, runtime.game_name, game_names().front());
+        first = runtime.setup_game(game_names().front());
+    }
+
+    runtime.game = std::move(first->game);
+    runtime.scripts = std::move(first->scripts);
     runtime.subscribe_game_input();
 
-    runtime.game->attach_host(GameHost{
+    auto const host = GameHost{
             .player_mode = player_mode,
             .request_exit = [window = context.window] { glfwSetWindowShouldClose(window, GLFW_TRUE); },
-            .script_entry = !cvars::script.get().empty() ? cvars::script.get() : launch ? launch->entry : std::string{},
+            .script_entry = first->script_entry,
             .effects = &runtime.effect_system,
             .text = runtime.text_renderer.get(),
-    });
+    };
+
+    runtime.game->attach_host(host);
+
+    if (runtime.scripts) {
+        runtime.scripts->attach_host(host);
+    }
 
     if (launch && !launch->title.empty()) {
         glfwSetWindowTitle(context.window, launch->title.c_str());

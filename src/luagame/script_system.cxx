@@ -1,4 +1,4 @@
-#include "luagame/lua_game.hxx"
+#include "luagame/script_system.hxx"
 
 #include <algorithm>
 #include <array>
@@ -48,7 +48,7 @@ namespace {
     constexpr float default_far_clip = 1000.0F;
 }
 
-struct LuaGame::Impl {
+struct ScriptSystem::Impl {
     GameHost host;
     LuaGameHost bindings;
     std::vector<std::pair<std::string, lua_CFunction>> native_modules;
@@ -72,29 +72,29 @@ struct LuaGame::Impl {
     }
 };
 
-LuaGame::LuaGame() : impl_(std::make_unique<Impl>()) {}
+ScriptSystem::ScriptSystem() : impl_(std::make_unique<Impl>()) {}
 
-LuaGame::~LuaGame() = default;
+ScriptSystem::~ScriptSystem() = default;
 
-auto LuaGame::add_native_module(std::string name, lua_CFunction opener) -> void {
+auto ScriptSystem::add_native_module(std::string name, lua_CFunction opener) -> void {
     impl_->native_modules.emplace_back(std::move(name), opener);
 }
 
-auto LuaGame::set_default_entry(std::string entry) -> void { impl_->default_entry_script = std::move(entry); }
+auto ScriptSystem::set_default_entry(std::string entry) -> void { impl_->default_entry_script = std::move(entry); }
 
-auto LuaGame::attach_host(GameHost host) -> void {
+auto ScriptSystem::attach_host(GameHost host) -> void {
     impl_->host = std::move(host);
     impl_->bindings.host = impl_->host;
 }
 
-auto LuaGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &engine_models) -> void {
+auto ScriptSystem::on_populate(Scene &scene, Renderer *renderer, EngineModels const *engine_models) -> void {
     auto &self = *impl_;
 
     scene.get_registry().clear();
 
     self.bindings.scene = &scene;
-    self.bindings.renderer = &renderer;
-    self.bindings.engine_models = &engine_models;
+    self.bindings.renderer = renderer;
+    self.bindings.engine_models = engine_models;
     self.bindings.animation = std::make_unique<LuaAnimationSystem>();
     self.bindings.collider_slots.clear();
     self.bindings.mesh_colliders.clear();
@@ -157,7 +157,7 @@ auto LuaGame::on_populate(Scene &scene, Renderer &renderer, EngineModels const &
     self.call("on_populate");
 }
 
-auto LuaGame::on_update(Scene &scene, float delta_time) -> void {
+auto ScriptSystem::on_update(Scene &scene, float delta_time) -> void {
     auto &self = *impl_;
 
     self.bindings.scene = &scene;
@@ -191,7 +191,7 @@ auto LuaGame::on_update(Scene &scene, float delta_time) -> void {
     self.bindings.mouse_delta_y = 0.0;
 }
 
-auto LuaGame::on_play_stop(Scene &scene) -> void {
+auto ScriptSystem::on_play_stop(Scene &scene) -> void {
     auto &self = *impl_;
 
     self.bindings.scene = &scene;
@@ -201,45 +201,45 @@ auto LuaGame::on_play_stop(Scene &scene) -> void {
     }
 }
 
-auto LuaGame::behaviour_names() -> std::span<std::string const> {
+auto ScriptSystem::behaviour_names() -> std::span<std::string const> {
     auto &self = *impl_;
 
     return self.bindings.components ? self.bindings.components->script_names() : std::span<std::string const>{};
 }
 
-auto LuaGame::behaviour_schema(std::string const &name) -> ScriptSchema const * {
+auto ScriptSystem::behaviour_schema(std::string const &name) -> ScriptSchema const * {
     auto &self = *impl_;
 
     return self.bindings.components ? self.bindings.components->schema(name) : nullptr;
 }
 
-auto LuaGame::reload_behaviours() -> void {
+auto ScriptSystem::reload_behaviours() -> void {
     if (impl_->bindings.components) {
         impl_->bindings.components->reload();
     }
 }
 
-auto LuaGame::clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
+auto ScriptSystem::clone_into_runtime(Scene const &editor_scene, Scene &runtime_scene) -> void {
     clone_editor_into_runtime<Components::Behaviour>(editor_scene, runtime_scene);
 }
 
-auto LuaGame::subscribe_input(InputContext const &ctx) -> void {
-    listen(ctx, &LuaGame::on_key_pressed);
-    listen(ctx, &LuaGame::on_key_released);
-    listen(ctx, &LuaGame::on_mouse_moved, true);
-    listen(ctx, &LuaGame::on_mouse_button_pressed);
+auto ScriptSystem::subscribe_input(InputContext const &ctx) -> void {
+    listen(ctx, &ScriptSystem::on_key_pressed);
+    listen(ctx, &ScriptSystem::on_key_released);
+    listen(ctx, &ScriptSystem::on_mouse_moved, true);
+    listen(ctx, &ScriptSystem::on_mouse_button_pressed);
 }
 
-auto LuaGame::on_key_released(Scene & , KeyReleasedEvent const &event) -> void {
+auto ScriptSystem::on_key_released(Scene & , KeyReleasedEvent const &event) -> void {
     impl_->bindings.keys_down.erase(event.key);
 }
 
-auto LuaGame::on_mouse_moved(Scene & , MouseMovedEvent const &event) -> void {
+auto ScriptSystem::on_mouse_moved(Scene & , MouseMovedEvent const &event) -> void {
     impl_->bindings.mouse_delta_x += event.delta_x;
     impl_->bindings.mouse_delta_y += event.delta_y;
 }
 
-auto LuaGame::on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void {
+auto ScriptSystem::on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void {
     auto &self = *impl_;
 
     self.bindings.scene = &scene;
@@ -250,7 +250,7 @@ auto LuaGame::on_key_pressed(Scene &scene, KeyPressedEvent const &event) -> void
     self.call("on_key", arguments);
 }
 
-auto LuaGame::on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent const &event) -> void {
+auto ScriptSystem::on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent const &event) -> void {
     auto &self = *impl_;
 
     self.bindings.scene = &scene;
@@ -260,9 +260,9 @@ auto LuaGame::on_mouse_button_pressed(Scene &scene, MouseButtonPressedEvent cons
     self.call("on_mouse_button", arguments);
 }
 
-auto LuaGame::wants_cursor() const -> bool { return impl_->runtime && impl_->runtime->callback_flag("wants_cursor"); }
+auto ScriptSystem::wants_cursor() const -> bool { return impl_->runtime && impl_->runtime->callback_flag("wants_cursor"); }
 
-auto LuaGame::on_cursor_position(Scene &scene, CursorPositionEvent const &event) -> void {
+auto ScriptSystem::on_cursor_position(Scene &scene, CursorPositionEvent const &event) -> void {
     auto &self = *impl_;
 
     self.bindings.scene = &scene;
@@ -272,7 +272,7 @@ auto LuaGame::on_cursor_position(Scene &scene, CursorPositionEvent const &event)
     self.call("on_cursor", arguments);
 }
 
-auto LuaGame::on_ui(Scene &scene, Renderer &renderer) -> void {
+auto ScriptSystem::on_ui(Scene &scene, Renderer &renderer) -> void {
     auto &self = *impl_;
 
     self.bindings.scene = &scene;
@@ -311,7 +311,29 @@ auto LuaGame::on_ui(Scene &scene, Renderer &renderer) -> void {
     ImGui::PopStyleColor();
 }
 
-auto LuaGame::camera(Scene const & , float aspect_ratio) const -> CameraParams {
+auto ScriptSystem::has_camera() const -> bool {
+    auto const &self = *impl_;
+
+    return self.runtime && (self.runtime->has_callback("on_camera") || self.runtime->has_callback("camera"));
+}
+
+auto ScriptSystem::ok() const -> bool { return impl_->runtime && impl_->fatal_error.empty() && impl_->runtime->last_error().empty(); }
+
+auto ScriptSystem::error_text() const -> std::string {
+    auto const &self = *impl_;
+
+    if (!self.fatal_error.empty()) {
+        return self.fatal_error;
+    }
+
+    if (self.runtime && !self.runtime->last_error().empty()) {
+        return self.runtime->last_error();
+    }
+
+    return self.bindings.components ? self.bindings.components->last_error() : std::string{};
+}
+
+auto ScriptSystem::camera(Scene const & , float aspect_ratio) const -> CameraParams {
     auto &self = *impl_;
 
     glm::vec3 eye{0.0F, 6.0F, -8.0F};
