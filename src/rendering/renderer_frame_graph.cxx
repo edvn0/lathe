@@ -1404,6 +1404,74 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
                 });
     }
 
+    // The temporal filter of that mask: this frame's raw mask is blended with the last frames' (reprojected), so the few
+    // noisy rays per pixel settle instead of flickering. The forward pass reads the filtered mask.
+    auto rt_shadow_filtered = frame_graph::ImageId{};
+    auto rt_shadow_filtered_index = std::uint32_t{0xFFFFFFFFU};
+    auto const rt_mask_extent = VkExtent2D{RayTracedShadows::mask_extent(targets->extent.width, rt_shadow_shift),
+                                          RayTracedShadows::mask_extent(targets->extent.height, rt_shadow_shift)};
+    auto const rt_filter_active = rt_shadows_active && ray_traced_shadows_.prepare_history(targets->extent, rt_mask_extent);
+    if (!rt_filter_active) {
+        ray_traced_shadows_.invalidate_history();
+    }
+    if (rt_filter_active) {
+        constexpr auto rt_history_state = frame_graph::ResourceState{
+                .layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                .stages = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                .access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+        };
+        // Both slots are used by every frame in flight: the first use waits for the last frame's last use.
+        auto const entry = ray_traced_shadows_.history_initialised() ? rt_history_state : frame_graph::ResourceState{};
+        auto const import_history = [&](Image const &image, char const *name) {
+            return frame_graph_.import_image({
+                    .entry = entry,
+                    .exit = rt_history_state,
+                    .debug_name = name,
+                    .image = physical_image(image),
+            });
+        };
+        auto const read_slot = ray_traced_shadows_.history_read_slot();
+        auto const write_slot = ray_traced_shadows_.history_write_slot();
+        auto history_mask_in = import_history(ray_traced_shadows_.history_mask(read_slot), "rt_shadow_history_in");
+        auto history_depth_in = import_history(ray_traced_shadows_.history_depth(read_slot), "rt_shadow_history_depth_in");
+        auto history_mask_out = import_history(ray_traced_shadows_.history_mask(write_slot), "rt_shadow_history_out");
+        auto history_depth_out =
+                import_history(ray_traced_shadows_.history_depth(write_slot), "rt_shadow_history_depth_out");
+        rt_shadow_filtered_index = ray_traced_shadows_.history_mask_index(write_slot);
+
+        frame_graph_.add_pass(
+                "rt_shadow_resolve", frame_graph::PassType::compute,
+                {
+                        .name_id = "rt_shadow_resolve",
+                        .label = "Ray traced shadow filter",
+                        .color = static_cast<std::uint32_t>(tracy::Color::DeepPink),
+                },
+                [&](frame_graph::PassBuilder &pass) {
+                    [[maybe_unused]] auto const depth =
+                            pass.read(resolved_depth_image, frame_graph::Use::sampled, compute_stage);
+                    [[maybe_unused]] auto const raw = pass.read(rt_shadow_image, frame_graph::Use::sampled, compute_stage);
+                    [[maybe_unused]] auto const mask_in =
+                            pass.read(history_mask_in, frame_graph::Use::sampled, compute_stage);
+                    [[maybe_unused]] auto const depth_in =
+                            pass.read(history_depth_in, frame_graph::Use::sampled, compute_stage);
+                    rt_shadow_filtered = pass.write(history_mask_out, frame_graph::Use::storage_write, compute_stage);
+                    history_depth_out = pass.write(history_depth_out, frame_graph::Use::storage_write, compute_stage);
+                    pass.side_effect();
+
+                    return frame_graph::RecordFn{[&](frame_graph::PassContext &context) {
+                        ray_traced_shadows_.record_resolve(context.command_buffer, info.frame_index,
+                                                           {.inverse_view_projection = glm::inverse(frame.view_projection),
+                                                            .view_projection = frame.view_projection,
+                                                            .depth_texture = transient_index(resolved_depth_image),
+                                                            .raw_mask = transient_index(rt_shadow_image),
+                                                            .width = targets->extent.width,
+                                                            .height = targets->extent.height});
+                        // After the pass has used this frame's slots and the previous camera.
+                        ray_traced_shadows_.finish_history(frame.view_projection);
+                    }};
+                });
+    }
+
     // With water on screen the forward pass is split in two around a copy of the scene colour and depth: the opaque
     // and masked draws (and the sky), then the blended draws, which sample the copy to refract (docs/water.md).
     // Without water it stays one pass and nothing is copied.
@@ -1416,7 +1484,8 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
     auto const declare_forward_reads = [&](frame_graph::PassBuilder &pass, bool with_overlays) {
         [[maybe_unused]] auto const shadows = pass.read(shadow_image, frame_graph::Use::sampled, fragment_stage);
         if (rt_shadows_active) {
-            [[maybe_unused]] auto const rt_shadows = pass.read(rt_shadow_image, frame_graph::Use::sampled, fragment_stage);
+            [[maybe_unused]] auto const rt_shadows =
+                    pass.read(rt_filter_active ? rt_shadow_filtered : rt_shadow_image, frame_graph::Use::sampled, fragment_stage);
         }
         if (gi_active) {
             [[maybe_unused]] auto const gi_irradiance_read =
@@ -1530,7 +1599,7 @@ auto Renderer::record_frame_view(FrameRecordInfo const &info, bool secondary) ->
         auto const output = phase == render_pass::ForwardPhase::opaque && multisampled ? scene_colour_copy : hdr_image;
         // The blended draws are not in the depth buffer the mask was made from: they keep the cascaded shadow map.
         auto const rt_shadow_index = rt_shadows_active && phase != render_pass::ForwardPhase::blend
-                                             ? transient_index(rt_shadow_image)
+                                             ? (rt_filter_active ? rt_shadow_filtered_index : transient_index(rt_shadow_image))
                                              : 0xFFFFFFFFU;
         auto const hdr = record_forward_pass(pass_context, frame, *targets, state.handoff.ao_texture_index,
                                              transient_index(output), render_pass::Callback::bind(scene_overlays),
