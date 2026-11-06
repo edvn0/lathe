@@ -2072,58 +2072,141 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
                 return it != edited.slots.end() ? it->material : MaterialHandle{};
             };
 
-            for (std::size_t index = 0; index < sources.size(); ++index) {
-                auto const source = sources[index];
+            static ImGuiTextFilter slot_filter;
+            static bool only_overridden = false;
+            static MaterialHandle selected_source{};
 
-                ImGui::PushID(static_cast<int>(index));
+            auto const slot_name = [&](std::size_t index) {
+                auto const name = renderer->model_material_name(model, sources[index]);
+                return name.empty() ? std::format("Slot {}", index) : std::string{name};
+            };
 
-                // The slot picked with Shift+click in the viewport is marked and scrolled to once.
+            if (!sources.empty()) {
+                auto const overridden_count = std::ranges::count_if(
+                        sources, [&](MaterialHandle source) { return slot_material(source).valid(); });
+                ImGui::SeparatorText(std::format("Slots ({}, {} overridden)", sources.size(), overridden_count).c_str());
+
+                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.6F);
+                if (ImGui::InputTextWithHint("##slot_filter", "Filter slots...", slot_filter.InputBuf,
+                                             sizeof(slot_filter.InputBuf))) {
+                    slot_filter.Build();
+                }
+                ImGui::SameLine();
+                ImGui::Checkbox("Overridden only", &only_overridden);
+
+                std::vector<std::size_t> visible;
+                for (std::size_t index = 0; index < sources.size(); ++index) {
+                    if (only_overridden && !slot_material(sources[index]).valid()) {
+                        continue;
+                    }
+                    if (slot_filter.IsActive() && !slot_filter.PassFilter(slot_name(index).c_str())) {
+                        continue;
+                    }
+                    visible.push_back(index);
+                }
+
+                // The slot picked with Shift+click in the viewport becomes the selected one and is scrolled to once.
                 auto const picked_slot = selection_context().submesh_highlight();
-                if (picked_slot.entity == entity && picked_slot.material == source) {
-                    ImGui::TextColored(ImVec4(1.0F, 0.75F, 0.2F, 1.0F), ">");
-                    ImGui::SameLine();
-                    if (scrolled_to_submesh != picked_slot) {
-                        ImGui::SetScrollHereY();
+                std::optional<std::size_t> scroll_to;
+                if (picked_slot.entity == entity && picked_slot.material.valid() && scrolled_to_submesh != picked_slot) {
+                    if (auto const it = std::ranges::find(visible, picked_slot.material,
+                                                           [&](std::size_t index) { return sources[index]; });
+                        it != visible.end()) {
+                        selected_source = picked_slot.material;
+                        scroll_to = static_cast<std::size_t>(it - visible.begin());
                         scrolled_to_submesh = picked_slot;
                     }
                 }
 
-                auto const replacement = edited.replacement_for(source);
-                if (auto const *shown =
-                            renderer->material_storage().create_info(replacement.valid() ? replacement : source)) {
-                    auto const &colour = shown->base_colour_factor;
-                    ImGui::ColorButton("##swatch", ImVec4(colour.r, colour.g, colour.b, colour.a),
-                                       ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_AlphaPreview);
-                    ImGui::SameLine();
-                }
+                float const row_height = ImGui::GetFrameHeightWithSpacing();
+                float const table_height = row_height * (static_cast<float>(std::min<std::size_t>(visible.size(), 10)) + 1.0F);
+                if (ImGui::BeginTable("slots", 3,
+                                      ImGuiTableFlags_ScrollY | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_PadOuterX,
+                                      ImVec2(0.0F, table_height))) {
+                    ImGui::TableSetupScrollFreeze(0, 1);
+                    ImGui::TableSetupColumn("Slot", ImGuiTableColumnFlags_WidthStretch, 1.0F);
+                    ImGui::TableSetupColumn("Override", ImGuiTableColumnFlags_WidthStretch, 1.0F);
+                    ImGui::TableSetupColumn("##action", ImGuiTableColumnFlags_WidthFixed,
+                                            ImGui::GetFontSize() * 5.5F);
 
-                auto const label = std::format("Slot {}", index);
-                ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0F);
-                if (auto const picked =
-                            material_picker(label.c_str(), slot_material(source), "(model material)", source)) {
-                    set_slot(source, *picked);
-                }
-
-                ImGui::SameLine();
-                if (slot_material(source).valid()) {
-                    if (ImGui::SmallButton("Revert")) {
-                        set_slot(source, MaterialHandle{});
+                    ImGuiListClipper clipper;
+                    clipper.Begin(static_cast<int>(visible.size()), row_height);
+                    if (scroll_to) {
+                        clipper.IncludeItemByIndex(static_cast<int>(*scroll_to));
                     }
-                } else if (ImGui::SmallButton("Override")) {
-                    if (auto const copy = make_material_copy(source)) {
-                        set_slot(source, *copy);
-                        ImGui::SetNextItemOpen(true);
+                    while (clipper.Step()) {
+                        for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+                            auto const index = visible[static_cast<std::size_t>(row)];
+                            auto const source = sources[index];
+
+                            ImGui::PushID(static_cast<int>(index));
+                            ImGui::TableNextRow();
+
+                            ImGui::TableSetColumnIndex(0);
+                            auto const replacement = edited.replacement_for(source);
+                            if (auto const *shown = renderer->material_storage().create_info(
+                                        replacement.valid() ? replacement : source)) {
+                                auto const &colour = shown->base_colour_factor;
+                                if (colour != glm::vec4{1.0F}) {
+                                ImGui::ColorButton("##swatch", ImVec4(colour.r, colour.g, colour.b, colour.a),
+                                                   ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_AlphaPreview |
+                                                           ImGuiColorEditFlags_NoPicker);
+                                ImGui::SameLine();
+                                }
+                            }
+                            if (ImGui::Selectable(slot_name(index).c_str(), selected_source == source,
+                                                  ImGuiSelectableFlags_AllowOverlap)) {
+                                selected_source = source;
+                            }
+                            if (scroll_to && *scroll_to == static_cast<std::size_t>(row)) {
+                                ImGui::SetScrollHereY();
+                            }
+
+                            ImGui::TableSetColumnIndex(1);
+                            if (slot_material(source).valid()) {
+                                ImGui::SetNextItemWidth(-FLT_MIN);
+                                if (auto const picked = material_picker("##material", slot_material(source),
+                                                                        "(model material)", source)) {
+                                    set_slot(source, *picked);
+                                }
+                            } else {
+                                ImGui::TextDisabled("model material");
+                            }
+
+                            ImGui::TableSetColumnIndex(2);
+                            if (slot_material(source).valid()) {
+                                if (ImGui::SmallButton("Revert")) {
+                                    set_slot(source, MaterialHandle{});
+                                }
+                            } else if (ImGui::SmallButton("Override")) {
+                                if (auto const copy = make_material_copy(source)) {
+                                    set_slot(source, *copy);
+                                    selected_source = source;
+                                }
+                            }
+
+                            ImGui::PopID();
+                        }
                     }
+                    ImGui::EndTable();
                 }
 
-                if (auto const current = slot_material(source); current.valid() && ImGui::TreeNode("Edit")) {
-                    if (auto const copy = draw_material_editor(current)) {
-                        set_slot(source, *copy);
-                    }
-                    ImGui::TreePop();
+                if (visible.empty()) {
+                    ImGui::TextDisabled("No slots match.");
                 }
 
-                ImGui::PopID();
+                if (auto const it = std::ranges::find(sources, selected_source); it != sources.end()) {
+                    if (auto const current = slot_material(selected_source); current.valid()) {
+                        auto const index = static_cast<std::size_t>(it - sources.begin());
+                        if (ImGui::TreeNodeEx(std::format("Edit {}", slot_name(index)).c_str(),
+                                              ImGuiTreeNodeFlags_DefaultOpen)) {
+                            if (auto const copy = draw_material_editor(current)) {
+                                set_slot(selected_source, *copy);
+                            }
+                            ImGui::TreePop();
+                        }
+                    }
+                }
             }
 
             auto const stale = std::ranges::count_if(edited.slots, [&](MaterialSlotOverride const &slot) {
@@ -2162,19 +2245,22 @@ auto Application::on_ui(std::uint32_t frame_index) -> void {
         section.operator()<Components::Lifetime>("Lifetime", draw_lifetime);
 
         section.operator()<Components::Model>("Model", [&](Components::Model &model) {
-            ImGui::Text("Handle: index %u, generation %u (%s)", model.model.index, model.model.generation,
-                        model.model.valid() ? "valid" : "invalid");
-
             if (auto const bounds = renderer->model_bounds(model.model)) {
                 auto const &[min, max] = *bounds;
-                ImGui::Text("Bounds (model space): min (%.2f, %.2f, %.2f)", min.x, min.y, min.z);
-                ImGui::Text("                      max (%.2f, %.2f, %.2f)", max.x, max.y, max.z);
+                auto const size = max - min;
+                ImGui::Text("Size %.2f x %.2f x %.2f", size.x, size.y, size.z);
+                if (auto const submesh_bounds = renderer->model_submesh_bounds(model.model)) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("| %u submeshes", static_cast<std::uint32_t>(submesh_bounds->size()));
+                }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Bounds (model space)\nmin (%.2f, %.2f, %.2f)\nmax (%.2f, %.2f, %.2f)\n"
+                                      "Handle: index %u, generation %u (%s)",
+                                      min.x, min.y, min.z, max.x, max.y, max.z, model.model.index,
+                                      model.model.generation, model.model.valid() ? "valid" : "invalid");
+                }
             } else {
                 ImGui::TextDisabled("Bounds unavailable");
-            }
-
-            if (auto const submesh_bounds = renderer->model_submesh_bounds(model.model)) {
-                ImGui::Text("Submeshes: %u", static_cast<std::uint32_t>(submesh_bounds->size()));
             }
 
             if (auto const lights = renderer->model_lights(model.model); !lights.empty()) {

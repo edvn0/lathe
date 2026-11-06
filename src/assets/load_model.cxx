@@ -1089,6 +1089,7 @@ namespace {
                            std::vector<ModelCpuImageSource> &image_sources, ImportConvention const &convention)
             -> std::expected<ModelCpuMaterial, ModelLoadError> {
         ModelCpuMaterial material{};
+        material.name = std::string{gltf_material.name};
 
         auto const &base_colour = gltf_material.pbrData.baseColorFactor;
         material.base_colour_factor = glm::vec4{base_colour[0], base_colour[1], base_colour[2], base_colour[3]};
@@ -1667,6 +1668,7 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
             }
 
             upload.materials.push_back(*material_handle);
+            upload.material_names.push_back(cpu_material.name);
             ++upload.material_cursor;
             ++processed;
             continue;
@@ -1871,6 +1873,7 @@ auto step_model_gpu_upload(ModelGpuUpload &upload, VkCommandBuffer command_buffe
         Model model;
         model.meshes = std::move(upload.meshes);
         model.materials = std::move(upload.materials);
+        model.material_names = std::move(upload.material_names);
         model.nodes = cpu_data.nodes;
         model.scene_roots = cpu_data.scene_roots;
         std::tie(model.bounds_min, model.bounds_max) = compute_model_bounds(cpu_data);

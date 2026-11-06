@@ -489,6 +489,9 @@ struct Renderer final : public IMeshSink, public IModelSink, public ISceneResour
     [[nodiscard]]
     // The model's material number `material_index` (what ModelPickHit::material indexes), the same handle a "Slot N" of
     // model_materials is made of, or the default material for ModelPickHit::no_material.
+    // The name the model file gave `material` (one of model_materials), or empty.
+    [[nodiscard]] auto model_material_name(ModelHandle model, MaterialHandle material) const -> std::string_view;
+
     [[nodiscard]] auto model_source_material(ModelHandle model, std::uint32_t material_index) const -> MaterialHandle;
     auto model_submesh_bounds(ModelHandle model) const -> std::optional<std::vector<std::pair<glm::vec3, glm::vec3>>>;
 
